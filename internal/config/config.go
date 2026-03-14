@@ -10,6 +10,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -105,21 +106,21 @@ func LoadConfig(path string) (*Config, error) {
 // setDefaultsAndValidate applies default values for optional fields and checks
 // that all required configuration values are present.
 func (c *Config) setDefaultsAndValidate() error {
-	var errors []string
+	var errs []error
 
 	// --- Cloudflare defaults and validation ---
 	if c.Cloudflare.APIToken == "" {
-		errors = append(errors, "cloudflare.api_token is required")
+		errs = append(errs, fmt.Errorf("cloudflare.api_token is required"))
 	}
 	if len(c.Cloudflare.Zones) == 0 {
-		errors = append(errors, "cloudflare.zones requires at least one zone")
+		errs = append(errs, fmt.Errorf("cloudflare.zones requires at least one zone"))
 	}
 	for i, z := range c.Cloudflare.Zones {
 		if z.ID == "" {
-			errors = append(errors, fmt.Sprintf("cloudflare.zones[%d].id is required", i))
+			errs = append(errs, fmt.Errorf("cloudflare.zones[%d].id is required", i))
 		}
 		if z.Name == "" {
-			errors = append(errors, fmt.Sprintf("cloudflare.zones[%d].name is required", i))
+			errs = append(errs, fmt.Errorf("cloudflare.zones[%d].name is required", i))
 		}
 	}
 	if c.Cloudflare.PollInterval == 0 {
@@ -131,7 +132,7 @@ func (c *Config) setDefaultsAndValidate() error {
 
 	// --- Loki defaults and validation ---
 	if c.Loki.Endpoint == "" {
-		errors = append(errors, "loki.endpoint is required")
+		errs = append(errs, fmt.Errorf("loki.endpoint is required"))
 	}
 	if c.Loki.TenantID == "" {
 		c.Loki.TenantID = "fake"
@@ -153,11 +154,7 @@ func (c *Config) setDefaultsAndValidate() error {
 		c.Logging.Format = "json"
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("%d validation error(s): %v", len(errors), errors)
-	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
 // ParseLogLevel maps a config string to an slog.Level.

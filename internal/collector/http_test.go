@@ -26,6 +26,19 @@ import (
 	io_prometheus "github.com/prometheus/client_model/go"
 )
 
+// httpTestConfig returns a CollectorConfig for HTTP collector tests with the
+// given Loki client and batch size.
+func httpTestConfig(lokiClient *loki.Client, batchSize int) CollectorConfig {
+	return CollectorConfig{
+		Loki:           lokiClient,
+		ZoneID:         "zone1",
+		ZoneName:       "example.com",
+		PollInterval:   time.Minute,
+		BackfillWindow: time.Hour,
+		BatchSize:      batchSize,
+	}
+}
+
 // -------------------------------------------------------------------------
 // UPDATE METRICS
 // -------------------------------------------------------------------------
@@ -37,7 +50,7 @@ func TestUpdateMetrics_CountryLabel(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
+	c := NewHTTPCollector(httpTestConfig(lokiClient, 100))
 
 	groups := []cloudflare.HTTPRequestGroup{
 		{
@@ -83,7 +96,7 @@ func TestUpdateMetrics_ResetsOnEachCall(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
+	c := NewHTTPCollector(httpTestConfig(lokiClient, 100))
 
 	// --- First call ---
 	c.updateMetrics([]cloudflare.HTTPRequestGroup{
@@ -135,7 +148,7 @@ func TestShipToLoki_SendsJSONEntries(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
+	c := NewHTTPCollector(httpTestConfig(lokiClient, 100))
 
 	groups := []cloudflare.HTTPRequestGroup{
 		{
@@ -213,7 +226,7 @@ func TestShipToLoki_Batching(t *testing.T) {
 	lokiClient := loki.NewClient(ts.URL, "fake")
 
 	// --- Batch size of 2 with 5 groups should produce 3 requests ---
-	c := NewHTTPCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 2)
+	c := NewHTTPCollector(httpTestConfig(lokiClient, 2))
 
 	groups := make([]cloudflare.HTTPRequestGroup, 5)
 	for i := range groups {
@@ -245,7 +258,7 @@ func TestShipToLoki_EmptyGroups(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
+	c := NewHTTPCollector(httpTestConfig(lokiClient, 100))
 
 	err := c.shipToLoki(context.Background(), nil)
 	if err != nil {
@@ -261,7 +274,7 @@ func TestShipToLoki_ServerError(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
+	c := NewHTTPCollector(httpTestConfig(lokiClient, 100))
 
 	groups := []cloudflare.HTTPRequestGroup{
 		{

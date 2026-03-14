@@ -116,9 +116,11 @@ func (m *Manager) supervise(ctx context.Context, e entry) {
 		}
 
 		// --- Brief pause before restart to avoid tight loops ---
+		restartDelay := time.NewTimer(1 * time.Second)
 		select {
-		case <-time.After(1 * time.Second):
+		case <-restartDelay.C:
 		case <-ctx.Done():
+			restartDelay.Stop()
 			return
 		}
 	}

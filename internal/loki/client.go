@@ -16,13 +16,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
+
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+)
+
+const (
+	// maxRetries is the number of additional attempts after the initial request
+	// for retryable HTTP status codes (429, 502, 503, 504).
+	maxRetries = 3
+
+	// retryBaseDelay is the initial backoff duration before the first retry.
+	retryBaseDelay = 1 * time.Second
 )
 
 // -------------------------------------------------------------------------
@@ -100,29 +112,52 @@ func (c *Client) Push(ctx context.Context, labels map[string]string, entries []E
 		return fmt.Errorf("marshal push request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.endpoint+"/loki/api/v1/push", bytes.NewReader(payload))
-	if err != nil {
-		metrics.LokiPushTotal.WithLabelValues("error").Inc()
-		return fmt.Errorf("create push request: %w", err)
-	}
+	var statusCode int
+	var respBody []byte
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Scope-OrgID", c.tenantID)
+	for attempt := range maxRetries + 1 {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			c.endpoint+"/loki/api/v1/push", bytes.NewReader(payload))
+		if err != nil {
+			metrics.LokiPushTotal.WithLabelValues("error").Inc()
+			return fmt.Errorf("create push request: %w", err)
+		}
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		metrics.LokiPushTotal.WithLabelValues("error").Inc()
-		return fmt.Errorf("push request: %w", err)
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("X-Scope-OrgID", c.tenantID)
+
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			metrics.LokiPushTotal.WithLabelValues("error").Inc()
+			return fmt.Errorf("push request: %w", err)
+		}
+
+		statusCode = resp.StatusCode
+		respBody, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MB cap
+		_ = resp.Body.Close()
+
+		if !isRetryable(statusCode) || attempt == maxRetries {
+			break
+		}
+
+		delay := retryDelay(resp.Header, attempt)
+		slog.WarnContext(ctx, "Loki returned retryable status, backing off",
+			"status", statusCode, "attempt", attempt+1, "delay", delay)
+
+		retryTimer := time.NewTimer(delay)
+		select {
+		case <-retryTimer.C:
+		case <-ctx.Done():
+			retryTimer.Stop()
+			return ctx.Err()
+		}
 	}
-	defer func() { _ = resp.Body.Close() }()
 
 	metrics.LokiPushDuration.Observe(time.Since(start).Seconds())
 
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+	if statusCode != http.StatusNoContent && statusCode != http.StatusOK {
 		metrics.LokiPushTotal.WithLabelValues("error").Inc()
-		err := fmt.Errorf("loki push HTTP %d: %s", resp.StatusCode, string(body))
+		err := fmt.Errorf("loki push HTTP %d: %s", statusCode, string(respBody))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return err
@@ -130,6 +165,30 @@ func (c *Client) Push(ctx context.Context, labels map[string]string, entries []E
 
 	metrics.LokiPushTotal.WithLabelValues("success").Inc()
 	return nil
+}
+
+// isRetryable returns true for HTTP status codes that warrant a retry.
+func isRetryable(statusCode int) bool {
+	switch statusCode {
+	case http.StatusTooManyRequests,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+// retryDelay computes the backoff duration for the given attempt, honoring
+// the Retry-After header if present.
+func retryDelay(header http.Header, attempt int) time.Duration {
+	if ra := header.Get("Retry-After"); ra != "" {
+		if secs, err := strconv.Atoi(ra); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return retryBaseDelay * (1 << attempt)
 }
 
 // -------------------------------------------------------------------------

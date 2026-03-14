@@ -22,8 +22,10 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/loki"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // -------------------------------------------------------------------------
@@ -44,15 +46,15 @@ type HTTPCollector struct {
 
 // NewHTTPCollector creates an HTTP traffic collector for the given zone
 // with the backfill window applied to the initial poll.
-func NewHTTPCollector(cf *cloudflare.Client, lokiClient *loki.Client, zoneID, zoneName string, pollInterval, backfillWindow time.Duration, batchSize int) *HTTPCollector {
+func NewHTTPCollector(cfg CollectorConfig) *HTTPCollector {
 	return &HTTPCollector{
-		cf:           cf,
-		loki:         lokiClient,
-		zoneID:       zoneID,
-		zoneName:     zoneName,
-		pollInterval: pollInterval,
-		lastSeen:     time.Now().UTC().Add(-backfillWindow),
-		batchSize:    batchSize,
+		cf:           cfg.CF,
+		loki:         cfg.Loki,
+		zoneID:       cfg.ZoneID,
+		zoneName:     cfg.ZoneName,
+		pollInterval: cfg.PollInterval,
+		lastSeen:     time.Now().UTC().Add(-cfg.BackfillWindow),
+		batchSize:    cfg.BatchSize,
 	}
 }
 
@@ -96,6 +98,8 @@ func (c *HTTPCollector) poll(ctx context.Context) {
 	groups, err := c.cf.QueryHTTPRequests(ctx, c.zoneID, c.lastSeen, until)
 	if err != nil {
 		slog.ErrorContext(ctx, "HTTP traffic poll failed", "zone", c.zoneName, "error", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		metrics.PollTotal.WithLabelValues("http", c.zoneName, "error").Inc()
 		metrics.PollDuration.WithLabelValues("http", c.zoneName).Observe(time.Since(start).Seconds())
 		return
@@ -121,10 +125,12 @@ func (c *HTTPCollector) poll(ctx context.Context) {
 	// --- Ship raw groups to Loki ---
 	if err := c.shipToLoki(ctx, groups); err != nil {
 		slog.ErrorContext(ctx, "Failed to ship HTTP traffic to Loki", "error", err)
-	} else {
-		slog.InfoContext(ctx, "HTTP traffic pushed to Loki", "groups", len(groups))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return
 	}
 
+	slog.InfoContext(ctx, "HTTP traffic pushed to Loki", "groups", len(groups))
 	c.lastSeen = until
 }
 

@@ -54,16 +54,16 @@ Fields captured: `count`, `datetime`, `clientRequestHTTPMethodName`, `edgeRespon
 
 ## Prometheus Metrics
 
-Exposed on the configured metrics listen address (default `:9102`).
+Exposed on the configured metrics listen address (default `:9101`).
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `cflog_poll_total` | counter | `dataset`, `status` | Poll attempts by dataset and outcome |
-| `cflog_poll_duration_seconds` | histogram | `dataset` | Poll latency |
-| `cflog_last_poll_timestamp` | gauge | `dataset` | Unix timestamp of last successful poll |
-| `cflog_firewall_events_total` | counter | `action` | Firewall events by action type |
-| `cflog_http_requests` | gauge | `method`, `status`, `country` | HTTP request counts from last poll window |
-| `cflog_http_bytes` | gauge | `type` | Edge response bytes from last poll window |
+| `cflog_poll_total` | counter | `dataset`, `zone`, `status` | Poll attempts by dataset, zone, and outcome |
+| `cflog_poll_duration_seconds` | histogram | `dataset`, `zone` | Poll latency |
+| `cflog_last_poll_timestamp` | gauge | `dataset`, `zone` | Unix timestamp of last successful poll |
+| `cflog_firewall_events_total` | counter | `action`, `zone` | Firewall events by action type |
+| `cflog_http_requests` | gauge | `method`, `status`, `country`, `zone` | HTTP request counts from last poll window |
+| `cflog_http_bytes` | gauge | `type`, `zone` | Edge response bytes from last poll window |
 | `cflog_loki_push_total` | counter | `status` | Loki push attempts by outcome |
 | `cflog_loki_push_duration_seconds` | histogram | | Loki push latency |
 | `cflog_build_info` | gauge | `version`, `go_version` | Build metadata |
@@ -86,7 +86,9 @@ Configuration is loaded from a YAML file. Environment variables are expanded wit
 ```yaml
 cloudflare:
   api_token: "${CF_API_TOKEN}"        # Cloudflare API token (Analytics Read)
-  zone_id: "${CF_ZONE_ID}"            # Zone to query
+  zones:                              # One or more zones to monitor
+    - id: "${CF_ZONE_ID}"
+      name: "example.com"
   poll_interval: 5m                   # How often to poll (default: 5m)
   backfill_window: 1h                 # On startup, fetch this far back (default: 1h)
 
@@ -96,7 +98,7 @@ loki:
   batch_size: 100                     # Max entries per push request (default: 100)
 
 metrics:
-  listen: ":9102"                     # Prometheus /metrics endpoint (default: :9101)
+  listen: ":9101"                     # Prometheus /metrics endpoint (default: :9101)
 
 tracing:
   enabled: true                       # Enable OTLP tracing (default: false)
@@ -141,7 +143,7 @@ source munchbox-env.sh && cd nomad && make run JOB=cloudflare-log-collector
 Store at `secret/data/cloudflare`:
 
 ```bash
-vault kv put secret/cloudflare api_token="<token>" zone_id="<zone_id>"
+vault kv put secret/cloudflare api_token="<token>" zone_id="<zone_id>" zone_name="<zone_name>"
 ```
 
 ## Development
@@ -200,9 +202,11 @@ make docker
     └── style-guide.md                # Code style conventions
 ```
 
-## Rate Limits
+## Rate Limits and Retry
 
-The Cloudflare GraphQL Analytics API allows 300 queries per 5 minutes. With two queries per poll cycle (firewall + HTTP) at the default 5-minute interval, usage stays well within limits. Free plan adaptive datasets support approximately 24 hours of lookback; the default backfill window is capped at 1 hour.
+The Cloudflare GraphQL Analytics API allows 300 queries per 5 minutes. With two queries per poll cycle (firewall + HTTP) per zone at the default 5-minute interval, usage stays well within limits. Free plan adaptive datasets support approximately 24 hours of lookback; the default backfill window is capped at 1 hour.
+
+Both the Cloudflare and Loki clients automatically retry on transient failures (HTTP 429, 502, 503, 504) with exponential backoff up to 3 retries. The `Retry-After` header is honored when present. If a query returns the maximum number of results (10,000 firewall events or 5,000 HTTP groups), a warning is logged indicating potential truncation.
 
 ## License
 

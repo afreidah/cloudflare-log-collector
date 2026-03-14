@@ -3,9 +3,19 @@
 #
 # Author: Alex Freidah
 #
-# Excludes process entry points, metric definitions, and telemetry wiring from
-# coverage reports.
+# Configures PR status checks and excludes process entry points, metric
+# definitions, and telemetry wiring from coverage reports.
 # -------------------------------------------------------------------------------
+
+coverage:
+  status:
+    project:
+      default:
+        target: auto         # compare against base commit coverage
+        threshold: 1%        # allow 1% drop without failing
+    patch:
+      default:
+        target: 80%          # new/changed lines should be 80% covered
 
 ignore:
   - "cmd/"                 # process entry points, not unit-testable

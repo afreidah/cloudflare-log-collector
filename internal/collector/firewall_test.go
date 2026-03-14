@@ -23,6 +23,19 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/loki"
 )
 
+// firewallTestConfig returns a CollectorConfig for firewall tests with the
+// given Loki client and batch size.
+func firewallTestConfig(lokiClient *loki.Client, batchSize int) CollectorConfig {
+	return CollectorConfig{
+		Loki:           lokiClient,
+		ZoneID:         "zone1",
+		ZoneName:       "example.com",
+		PollInterval:   time.Minute,
+		BackfillWindow: time.Hour,
+		BatchSize:      batchSize,
+	}
+}
+
 // -------------------------------------------------------------------------
 // SHIP TO LOKI
 // -------------------------------------------------------------------------
@@ -40,7 +53,7 @@ func TestFirewallShipToLoki_SendsJSONEntries(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewFirewallCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
+	c := NewFirewallCollector(firewallTestConfig(lokiClient, 100))
 
 	events := []cloudflare.FirewallEvent{
 		{
@@ -107,7 +120,7 @@ func TestFirewallShipToLoki_Batching(t *testing.T) {
 	lokiClient := loki.NewClient(ts.URL, "fake")
 
 	// --- Batch size of 3 with 7 events should produce 3 requests ---
-	c := NewFirewallCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 3)
+	c := NewFirewallCollector(firewallTestConfig(lokiClient, 3))
 
 	events := make([]cloudflare.FirewallEvent, 7)
 	for i := range events {
@@ -136,7 +149,7 @@ func TestFirewallShipToLoki_ServerError(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewFirewallCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
+	c := NewFirewallCollector(firewallTestConfig(lokiClient, 100))
 
 	events := []cloudflare.FirewallEvent{
 		{
@@ -165,7 +178,7 @@ func TestFirewallShipToLoki_InvalidTimestamp(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewFirewallCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
+	c := NewFirewallCollector(firewallTestConfig(lokiClient, 100))
 
 	// --- Event with unparseable timestamp should still be shipped ---
 	events := []cloudflare.FirewallEvent{

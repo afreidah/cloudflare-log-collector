@@ -21,8 +21,25 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/loki"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
+
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
+
+// -------------------------------------------------------------------------
+// COLLECTOR CONFIG
+// -------------------------------------------------------------------------
+
+// CollectorConfig holds the shared parameters for constructing a collector.
+type CollectorConfig struct {
+	CF             *cloudflare.Client
+	Loki           *loki.Client
+	ZoneID         string
+	ZoneName       string
+	PollInterval   time.Duration
+	BackfillWindow time.Duration
+	BatchSize      int
+}
 
 // -------------------------------------------------------------------------
 // FIREWALL COLLECTOR
@@ -41,15 +58,15 @@ type FirewallCollector struct {
 
 // NewFirewallCollector creates a firewall event collector for the given zone
 // with the backfill window applied to the initial poll.
-func NewFirewallCollector(cf *cloudflare.Client, lokiClient *loki.Client, zoneID, zoneName string, pollInterval, backfillWindow time.Duration, batchSize int) *FirewallCollector {
+func NewFirewallCollector(cfg CollectorConfig) *FirewallCollector {
 	return &FirewallCollector{
-		cf:           cf,
-		loki:         lokiClient,
-		zoneID:       zoneID,
-		zoneName:     zoneName,
-		pollInterval: pollInterval,
-		lastSeen:     time.Now().UTC().Add(-backfillWindow),
-		batchSize:    batchSize,
+		cf:           cfg.CF,
+		loki:         cfg.Loki,
+		zoneID:       cfg.ZoneID,
+		zoneName:     cfg.ZoneName,
+		pollInterval: cfg.PollInterval,
+		lastSeen:     time.Now().UTC().Add(-cfg.BackfillWindow),
+		batchSize:    cfg.BatchSize,
 	}
 }
 
@@ -93,6 +110,8 @@ func (c *FirewallCollector) poll(ctx context.Context) {
 	events, err := c.cf.QueryFirewallEvents(ctx, c.zoneID, c.lastSeen, until)
 	if err != nil {
 		slog.ErrorContext(ctx, "Firewall poll failed", "zone", c.zoneName, "error", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		metrics.PollTotal.WithLabelValues("firewall", c.zoneName, "error").Inc()
 		metrics.PollDuration.WithLabelValues("firewall", c.zoneName).Observe(time.Since(start).Seconds())
 		return
@@ -114,6 +133,8 @@ func (c *FirewallCollector) poll(ctx context.Context) {
 	// --- Ship events to Loki in batches ---
 	if err := c.shipToLoki(ctx, events); err != nil {
 		slog.ErrorContext(ctx, "Failed to ship firewall events to Loki", "error", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return
 	}
 

@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -287,7 +288,7 @@ func TestValidation_MultipleErrors(t *testing.T) {
 
 	// --- Should report all missing required fields ---
 	errStr := err.Error()
-	if !contains(errStr, "api_token") || !contains(errStr, "zones") || !contains(errStr, "loki.endpoint") {
+	if !strings.Contains(errStr, "api_token") || !strings.Contains(errStr, "zones") || !strings.Contains(errStr, "loki.endpoint") {
 		t.Errorf("error should mention all missing fields, got: %v", err)
 	}
 }
@@ -319,21 +320,3 @@ func TestParseLogLevel(t *testing.T) {
 	}
 }
 
-// -------------------------------------------------------------------------
-// HELPERS
-// -------------------------------------------------------------------------
-
-// contains checks if s contains substr.
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-// searchString performs a naive substring search.
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}

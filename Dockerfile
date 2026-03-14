@@ -44,8 +44,7 @@ LABEL org.opencontainers.image.title="cloudflare-log-collector" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.source="https://github.com/afreidah/cloudflare-log-collector"
 
-RUN apk upgrade --no-cache && \
-    apk add --no-cache ca-certificates && \
+RUN apk add --no-cache ca-certificates && \
     adduser -D -u 10001 appuser
 
 COPY --from=builder /build/cloudflare-log-collector /usr/local/bin/

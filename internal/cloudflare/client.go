@@ -16,16 +16,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
+
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 )
 
-// graphQLEndpoint is the Cloudflare Analytics GraphQL API URL.
-const graphQLEndpoint = "https://api.cloudflare.com/client/v4/graphql"
+const (
+	// graphQLEndpoint is the Cloudflare Analytics GraphQL API URL.
+	graphQLEndpoint = "https://api.cloudflare.com/client/v4/graphql"
+
+	// firewallQueryLimit is the maximum number of firewall events returned per query.
+	firewallQueryLimit = 10000
+
+	// httpQueryLimit is the maximum number of HTTP request groups returned per query.
+	httpQueryLimit = 5000
+
+	// maxResponseBytes caps the size of response bodies read from the API to
+	// guard against unbounded memory allocation.
+	maxResponseBytes = 10 << 20 // 10 MB
+
+	// maxRetries is the number of additional attempts after the initial request
+	// for retryable HTTP status codes (429, 502, 503, 504).
+	maxRetries = 3
+
+	// retryBaseDelay is the initial backoff duration before the first retry.
+	retryBaseDelay = 1 * time.Second
+)
 
 // -------------------------------------------------------------------------
 // CLIENT
@@ -195,7 +217,13 @@ func (c *Client) QueryFirewallEvents(ctx context.Context, zoneID string, since, 
 		return nil, nil
 	}
 
-	return resp.Viewer.Zones[0].FirewallEventsAdaptive, nil
+	events := resp.Viewer.Zones[0].FirewallEventsAdaptive
+	if len(events) >= firewallQueryLimit {
+		slog.WarnContext(ctx, "Firewall query hit limit, events may be truncated",
+			"zone_id", zoneID, "limit", firewallQueryLimit, "count", len(events))
+	}
+
+	return events, nil
 }
 
 // QueryHTTPRequests fetches aggregated HTTP traffic stats for the given zone and time range.
@@ -220,7 +248,13 @@ func (c *Client) QueryHTTPRequests(ctx context.Context, zoneID string, since, un
 		return nil, nil
 	}
 
-	return resp.Viewer.Zones[0].HTTPRequestsAdaptiveGroups, nil
+	groups := resp.Viewer.Zones[0].HTTPRequestsAdaptiveGroups
+	if len(groups) >= httpQueryLimit {
+		slog.WarnContext(ctx, "HTTP request query hit limit, groups may be truncated",
+			"zone_id", zoneID, "limit", httpQueryLimit, "count", len(groups))
+	}
+
+	return groups, nil
 }
 
 // -------------------------------------------------------------------------
@@ -231,6 +265,8 @@ func (c *Client) QueryHTTPRequests(ctx context.Context, zoneID string, since, un
 func (c *Client) doQuery(ctx context.Context, zoneID, query string, variables map[string]any) (json.RawMessage, error) {
 	ctx, span := telemetry.StartSpan(ctx, "cloudflare.graphql",
 		attribute.String("cflog.zone_id", zoneID),
+		attribute.String("cflog.since", fmt.Sprint(variables["since"])),
+		attribute.String("cflog.until", fmt.Sprint(variables["until"])),
 	)
 	defer span.End()
 
@@ -244,29 +280,52 @@ func (c *Client) doQuery(ctx context.Context, zoneID, query string, variables ma
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+	var respBody []byte
+	var statusCode int
+
+	for attempt := range maxRetries + 1 {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.apiToken)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("http request: %w", err)
+		}
+
+		respBody, err = io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
+
+		statusCode = resp.StatusCode
+
+		if !isRetryable(statusCode) || attempt == maxRetries {
+			break
+		}
+
+		delay := retryDelay(resp.Header, attempt)
+		slog.WarnContext(ctx, "Cloudflare API returned retryable status, backing off",
+			"status", statusCode, "attempt", attempt+1, "delay", delay)
+
+		retryTimer := time.NewTimer(delay)
+		select {
+		case <-retryTimer.C:
+		case <-ctx.Done():
+			retryTimer.Stop()
+			return nil, ctx.Err()
+		}
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiToken)
+	span.SetAttributes(attribute.Int("http.status_code", statusCode))
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("http request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
-
-	if resp.StatusCode != http.StatusOK {
-		err := fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	if statusCode != http.StatusOK {
+		err := fmt.Errorf("HTTP %d: %s", statusCode, string(respBody))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return nil, err
@@ -287,4 +346,28 @@ func (c *Client) doQuery(ctx context.Context, zoneID, query string, variables ma
 	}
 
 	return gqlResp.Data, nil
+}
+
+// isRetryable returns true for HTTP status codes that warrant a retry.
+func isRetryable(statusCode int) bool {
+	switch statusCode {
+	case http.StatusTooManyRequests,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+// retryDelay computes the backoff duration for the given attempt, honoring
+// the Retry-After header if present.
+func retryDelay(header http.Header, attempt int) time.Duration {
+	if ra := header.Get("Retry-After"); ra != "" {
+		if secs, err := strconv.Atoi(ra); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return retryBaseDelay * (1 << attempt)
 }

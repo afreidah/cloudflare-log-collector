@@ -78,23 +78,18 @@ func main() {
 	sm := lifecycle.NewManager()
 
 	for _, zone := range cfg.Cloudflare.Zones {
-		fw := collector.NewFirewallCollector(
-			cfClient, lokiClient,
-			zone.ID, zone.Name,
-			cfg.Cloudflare.PollInterval,
-			cfg.Cloudflare.BackfillWindow,
-			cfg.Loki.BatchSize,
-		)
-		sm.Register(fmt.Sprintf("firewall-%s", zone.Name), fw)
+		cc := collector.CollectorConfig{
+			CF:             cfClient,
+			Loki:           lokiClient,
+			ZoneID:         zone.ID,
+			ZoneName:       zone.Name,
+			PollInterval:   cfg.Cloudflare.PollInterval,
+			BackfillWindow: cfg.Cloudflare.BackfillWindow,
+			BatchSize:      cfg.Loki.BatchSize,
+		}
 
-		hc := collector.NewHTTPCollector(
-			cfClient, lokiClient,
-			zone.ID, zone.Name,
-			cfg.Cloudflare.PollInterval,
-			cfg.Cloudflare.BackfillWindow,
-			cfg.Loki.BatchSize,
-		)
-		sm.Register(fmt.Sprintf("http-%s", zone.Name), hc)
+		sm.Register(fmt.Sprintf("firewall-%s", zone.Name), collector.NewFirewallCollector(cc))
+		sm.Register(fmt.Sprintf("http-%s", zone.Name), collector.NewHTTPCollector(cc))
 	}
 
 	bgCtx, bgCancel := context.WithCancel(context.Background())
