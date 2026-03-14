@@ -18,46 +18,46 @@ import (
 // POLL METRICS
 // -------------------------------------------------------------------------
 
-// PollTotal counts poll attempts by dataset and status.
+// PollTotal counts poll attempts by dataset, zone, and status.
 var PollTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "cflog_poll_total",
 	Help: "Total Cloudflare API poll attempts",
-}, []string{"dataset", "status"})
+}, []string{"dataset", "zone", "status"})
 
-// PollDuration tracks poll latency by dataset.
+// PollDuration tracks poll latency by dataset and zone.
 var PollDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 	Name:    "cflog_poll_duration_seconds",
 	Help:    "Cloudflare API poll latency in seconds",
 	Buckets: prometheus.DefBuckets,
-}, []string{"dataset"})
+}, []string{"dataset", "zone"})
 
 // LastPollTimestamp records the unix timestamp of the last successful poll.
 var LastPollTimestamp = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "cflog_last_poll_timestamp",
 	Help: "Unix timestamp of last successful poll",
-}, []string{"dataset"})
+}, []string{"dataset", "zone"})
 
 // -------------------------------------------------------------------------
 // EVENT METRICS
 // -------------------------------------------------------------------------
 
-// FirewallEventsTotal counts firewall events by action.
+// FirewallEventsTotal counts firewall events by action and zone.
 var FirewallEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "cflog_firewall_events_total",
 	Help: "Cloudflare firewall events by action",
-}, []string{"action"})
+}, []string{"action", "zone"})
 
 // HTTPRequests tracks HTTP request counts from the last poll window.
 var HTTPRequests = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "cflog_http_requests",
 	Help: "HTTP request counts from last poll window",
-}, []string{"method", "status", "country"})
+}, []string{"method", "status", "country", "zone"})
 
-// HTTPBytes tracks byte counts by type from the last poll window.
+// HTTPBytes tracks byte counts by type and zone from the last poll window.
 var HTTPBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "cflog_http_bytes",
 	Help: "HTTP bytes by type from last poll window",
-}, []string{"type"})
+}, []string{"type", "zone"})
 
 // -------------------------------------------------------------------------
 // LOKI METRICS

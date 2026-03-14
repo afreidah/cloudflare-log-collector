@@ -65,14 +65,14 @@ func TestUpdateMetrics_CountryLabel(t *testing.T) {
 	c.updateMetrics(groups)
 
 	// --- Verify country label on HTTP requests gauge ---
-	usGauge := metrics.HTTPRequests.WithLabelValues("GET", "200", "US")
+	usGauge := metrics.HTTPRequests.WithLabelValues("GET", "200", "US", "example.com")
 	assertGaugeValue(t, usGauge, 10)
 
-	deGauge := metrics.HTTPRequests.WithLabelValues("POST", "201", "DE")
+	deGauge := metrics.HTTPRequests.WithLabelValues("POST", "201", "DE", "example.com")
 	assertGaugeValue(t, deGauge, 5)
 
 	// --- Verify edge bytes ---
-	edgeGauge := metrics.HTTPBytes.WithLabelValues("edge")
+	edgeGauge := metrics.HTTPBytes.WithLabelValues("edge", "example.com")
 	assertGaugeValue(t, edgeGauge, 1536)
 }
 
@@ -111,10 +111,10 @@ func TestUpdateMetrics_ResetsOnEachCall(t *testing.T) {
 		},
 	})
 
-	gauge := metrics.HTTPRequests.WithLabelValues("GET", "200", "US")
+	gauge := metrics.HTTPRequests.WithLabelValues("GET", "200", "US", "example.com")
 	assertGaugeValue(t, gauge, 3)
 
-	edgeGauge := metrics.HTTPBytes.WithLabelValues("edge")
+	edgeGauge := metrics.HTTPBytes.WithLabelValues("edge", "example.com")
 	assertGaugeValue(t, edgeGauge, 100)
 }
 

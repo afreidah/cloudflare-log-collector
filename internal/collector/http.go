@@ -94,15 +94,15 @@ func (c *HTTPCollector) poll(ctx context.Context) {
 
 	groups, err := c.cf.QueryHTTPRequests(ctx, c.zoneID, c.lastSeen, until)
 	if err != nil {
-		slog.ErrorContext(ctx, "HTTP traffic poll failed", "error", err)
-		metrics.PollTotal.WithLabelValues("http", "error").Inc()
-		metrics.PollDuration.WithLabelValues("http").Observe(time.Since(start).Seconds())
+		slog.ErrorContext(ctx, "HTTP traffic poll failed", "zone", c.zoneName, "error", err)
+		metrics.PollTotal.WithLabelValues("http", c.zoneName, "error").Inc()
+		metrics.PollDuration.WithLabelValues("http", c.zoneName).Observe(time.Since(start).Seconds())
 		return
 	}
 
-	metrics.PollTotal.WithLabelValues("http", "success").Inc()
-	metrics.PollDuration.WithLabelValues("http").Observe(time.Since(start).Seconds())
-	metrics.LastPollTimestamp.WithLabelValues("http").Set(float64(time.Now().Unix()))
+	metrics.PollTotal.WithLabelValues("http", c.zoneName, "success").Inc()
+	metrics.PollDuration.WithLabelValues("http", c.zoneName).Observe(time.Since(start).Seconds())
+	metrics.LastPollTimestamp.WithLabelValues("http", c.zoneName).Set(float64(time.Now().Unix()))
 
 	span.SetAttributes(attribute.Int("cflog.group_count", len(groups)))
 
@@ -141,12 +141,12 @@ func (c *HTTPCollector) updateMetrics(groups []cloudflare.HTTPRequestGroup) {
 		status := fmt.Sprintf("%d", g.Dimensions.EdgeResponseStatus)
 		country := g.Dimensions.ClientCountryName
 
-		metrics.HTTPRequests.WithLabelValues(method, status, country).Add(float64(g.Count))
+		metrics.HTTPRequests.WithLabelValues(method, status, country, c.zoneName).Add(float64(g.Count))
 
 		totalEdgeBytes += g.Sum.EdgeResponseBytes
 	}
 
-	metrics.HTTPBytes.WithLabelValues("edge").Set(float64(totalEdgeBytes))
+	metrics.HTTPBytes.WithLabelValues("edge", c.zoneName).Set(float64(totalEdgeBytes))
 }
 
 // shipToLoki sends HTTP traffic groups to Loki as JSON log lines in batches.
