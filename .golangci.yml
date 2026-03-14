@@ -1,0 +1,40 @@
+# -------------------------------------------------------------------------------
+# golangci-lint Configuration
+#
+# Author: Alex Freidah
+#
+# Linter settings for static analysis. Enables gocritic (diagnostic + performance
+# tags) and misspell.
+# -------------------------------------------------------------------------------
+
+version: "2"
+linters:
+  enable:
+    - gocritic
+    - misspell
+  settings:
+    gocritic:
+      disabled-checks:
+        - exitAfterDefer
+        - hugeParam
+      enabled-tags:
+        - diagnostic
+        - performance
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

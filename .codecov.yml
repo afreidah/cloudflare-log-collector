@@ -1,0 +1,14 @@
+# -------------------------------------------------------------------------------
+# Codecov Configuration
+#
+# Author: Alex Freidah
+#
+# Excludes process entry points, metric definitions, and telemetry wiring from
+# coverage reports.
+# -------------------------------------------------------------------------------
+
+ignore:
+  - "cmd/"                 # process entry points, not unit-testable
+  - "internal/metrics/"    # metric definitions, not unit-testable
+  - "internal/telemetry/"  # OTel wiring, not unit-testable
+  - "internal/lifecycle/"  # background lifecycle manager, thin goroutine glue

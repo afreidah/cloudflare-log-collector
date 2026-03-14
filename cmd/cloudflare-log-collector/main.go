@@ -88,9 +88,10 @@ func main() {
 	sm.Register("firewall-collector", firewallCollector)
 
 	httpCollector := collector.NewHTTPCollector(
-		cfClient,
+		cfClient, lokiClient,
 		cfg.Cloudflare.PollInterval,
 		cfg.Cloudflare.BackfillWindow,
+		cfg.Loki.BatchSize,
 	)
 	sm.Register("http-collector", httpCollector)
 

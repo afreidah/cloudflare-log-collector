@@ -51,7 +51,7 @@ var FirewallEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 var HTTPRequests = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "cflog_http_requests",
 	Help: "HTTP request counts from last poll window",
-}, []string{"method", "status"})
+}, []string{"method", "status", "country"})
 
 // HTTPBytes tracks byte counts by type from the last poll window.
 var HTTPBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{

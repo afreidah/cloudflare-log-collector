@@ -1,0 +1,207 @@
+# Cloudflare Log Collector
+
+[![CI](https://github.com/afreidah/cloudflare-log-collector/actions/workflows/ci.yml/badge.svg)](https://github.com/afreidah/cloudflare-log-collector/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/afreidah/cloudflare-log-collector/branch/main/graph/badge.svg)](https://codecov.io/gh/afreidah/cloudflare-log-collector)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+A lightweight Go service that polls the Cloudflare GraphQL Analytics API for firewall events and HTTP traffic statistics, ships them into a self-hosted observability stack, and traces every poll cycle with OpenTelemetry.
+
+- **Firewall events** are pushed to Loki as structured JSON log lines for querying in Grafana
+- **HTTP traffic stats** are exposed as Prometheus gauges (by method, status, and country) and also pushed to Loki for raw detail
+- **Every poll cycle** gets its own OpenTelemetry trace with child spans for API calls and Loki pushes, exported to Tempo via OTLP gRPC
+- **Log-trace correlation** is automatic — `trace_id` and `span_id` are injected into every structured log line via a custom slog handler, enabling one-click navigation between Loki logs and Tempo traces in Grafana
+
+```
+         Cloudflare GraphQL API
+                   |
+                   v
+      +---------------------------+
+      | cloudflare-log-collector  |
+      +---------------------------+
+         |         |          |
+         v         v          v
+       Loki    Prometheus   Tempo
+     (events)  (metrics)   (traces)
+         \         |          /
+          '--- Grafana ------'
+```
+
+## Table of Contents
+
+- [Datasets](#datasets)
+- [Prometheus Metrics](#prometheus-metrics)
+- [Loki Streams](#loki-streams)
+- [Configuration](#configuration)
+- [Deployment](#deployment)
+- [Development](#development)
+- [Project Structure](#project-structure)
+
+## Datasets
+
+### Firewall Events (`firewallEventsAdaptive`)
+
+Individual WAF/firewall events with full request detail. Each event becomes a JSON log line in Loki under `{job="cloudflare", type="firewall", zone="munchbox.cc"}`.
+
+Fields captured: `action`, `clientIP`, `clientRequestHTTPHost`, `clientRequestHTTPMethodName`, `clientRequestPath`, `clientRequestQuery`, `datetime`, `rayName`, `ruleId`, `source`, `userAgent`, `clientCountryName`.
+
+### HTTP Traffic (`httpRequestsAdaptiveGroups`)
+
+Aggregated HTTP traffic statistics grouped by method, status code, and country. Pushed to both Prometheus (gauges) and Loki (structured JSON under `{job="cloudflare", type="http_traffic", zone="munchbox.cc"}`).
+
+Fields captured: `count`, `datetime`, `clientRequestHTTPMethodName`, `edgeResponseStatus`, `clientCountryName`, `edgeResponseBytes`.
+
+## Prometheus Metrics
+
+Exposed on the configured metrics listen address (default `:9102`).
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `cflog_poll_total` | counter | `dataset`, `status` | Poll attempts by dataset and outcome |
+| `cflog_poll_duration_seconds` | histogram | `dataset` | Poll latency |
+| `cflog_last_poll_timestamp` | gauge | `dataset` | Unix timestamp of last successful poll |
+| `cflog_firewall_events_total` | counter | `action` | Firewall events by action type |
+| `cflog_http_requests` | gauge | `method`, `status`, `country` | HTTP request counts from last poll window |
+| `cflog_http_bytes` | gauge | `type` | Edge response bytes from last poll window |
+| `cflog_loki_push_total` | counter | `status` | Loki push attempts by outcome |
+| `cflog_loki_push_duration_seconds` | histogram | | Loki push latency |
+| `cflog_build_info` | gauge | `version`, `go_version` | Build metadata |
+
+## Loki Streams
+
+Two log streams are pushed to Loki:
+
+| Stream | Labels | Content |
+|--------|--------|---------|
+| Firewall events | `{job="cloudflare", type="firewall", zone="munchbox.cc"}` | One JSON log line per firewall event |
+| HTTP traffic | `{job="cloudflare", type="http_traffic", zone="munchbox.cc"}` | One JSON log line per traffic group |
+
+Both streams include `X-Scope-OrgID` header for multi-tenant Loki deployments (configurable via `tenant_id`).
+
+## Configuration
+
+Configuration is loaded from a YAML file. Environment variables are expanded with `${VAR_NAME}` syntax.
+
+```yaml
+cloudflare:
+  api_token: "${CF_API_TOKEN}"        # Cloudflare API token (Analytics Read)
+  zone_id: "${CF_ZONE_ID}"            # Zone to query
+  poll_interval: 5m                   # How often to poll (default: 5m)
+  backfill_window: 1h                 # On startup, fetch this far back (default: 1h)
+
+loki:
+  endpoint: "http://loki:3100"        # Loki push API base URL
+  tenant_id: "fake"                   # X-Scope-OrgID header (default: fake)
+  batch_size: 100                     # Max entries per push request (default: 100)
+
+metrics:
+  listen: ":9102"                     # Prometheus /metrics endpoint (default: :9101)
+
+tracing:
+  enabled: true                       # Enable OTLP tracing (default: false)
+  endpoint: "tempo:4317"              # OTLP gRPC endpoint
+  sample_rate: 1.0                    # Sampling rate 0.0-1.0 (default: 1.0)
+  insecure: true                      # Disable TLS for OTLP (default: false)
+
+logging:
+  level: "info"                       # Log level: debug, info, warn, error
+  format: "json"                      # Log format: json, text (default: json)
+```
+
+### Cloudflare API Token
+
+The API token requires the following permissions:
+
+- **Account Analytics** — Read
+- **Zone Analytics** — Read
+
+Create one at [Cloudflare Dashboard > API Tokens](https://dash.cloudflare.com/profile/api-tokens).
+
+## Deployment
+
+### Docker
+
+```bash
+make push VERSION=v0.1.1
+```
+
+Builds and pushes multi-arch images (`linux/amd64`, `linux/arm64`) to the configured registry.
+
+### Nomad
+
+The service deploys as a standard Nomad job with Vault integration for secret injection. The Nomad job template renders the config file with Cloudflare credentials from Vault at `secret/data/cloudflare`.
+
+```bash
+source munchbox-env.sh && cd nomad && make run JOB=cloudflare-log-collector
+```
+
+### Vault Secret
+
+Store at `secret/data/cloudflare`:
+
+```bash
+vault kv put secret/cloudflare api_token="<token>" zone_id="<zone_id>"
+```
+
+## Development
+
+```bash
+# --- Build ---
+make build
+
+# --- Run locally ---
+make run                    # requires config.yaml in project root
+
+# --- Test ---
+make test                   # unit tests with race detector
+
+# --- Lint ---
+make lint                   # golangci-lint
+
+# --- Docker (local arch) ---
+make docker
+```
+
+## Project Structure
+
+```
+├── .version                          # Semantic version tag
+├── Dockerfile                        # Multi-stage Alpine build
+├── Makefile                          # Build, test, push targets
+├── cmd/
+│   └── cloudflare-log-collector/
+│       └── main.go                   # Entry point, config, signal handling
+├── internal/
+│   ├── cloudflare/
+│   │   ├── client.go                 # GraphQL API client, query builders
+│   │   └── client_test.go
+│   ├── collector/
+│   │   ├── firewall.go               # Firewall event poller, Loki shipper
+│   │   ├── firewall_test.go
+│   │   ├── http.go                   # HTTP traffic poller, metrics + Loki
+│   │   └── http_test.go
+│   ├── config/
+│   │   ├── config.go                 # YAML config with env var expansion
+│   │   └── config_test.go
+│   ├── lifecycle/
+│   │   ├── manager.go                # Background service lifecycle
+│   │   └── manager_test.go
+│   ├── loki/
+│   │   ├── client.go                 # Loki push API client
+│   │   └── client_test.go
+│   ├── metrics/
+│   │   └── metrics.go                # Prometheus metric definitions
+│   └── telemetry/
+│       ├── tracing.go                # OTel tracer init, span helpers
+│       ├── tracehandler.go           # slog handler for trace correlation
+│       └── tracehandler_test.go
+└── docs/
+    └── style-guide.md                # Code style conventions
+```
+
+## Rate Limits
+
+The Cloudflare GraphQL Analytics API allows 300 queries per 5 minutes. With two queries per poll cycle (firewall + HTTP) at the default 5-minute interval, usage stays well within limits. Free plan adaptive datasets support approximately 24 hours of lookback; the default backfill window is capped at 1 hour.
+
+## License
+
+MIT

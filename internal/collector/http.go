@@ -4,20 +4,22 @@
 // Author: Alex Freidah
 //
 // Polls the Cloudflare httpRequestsAdaptiveGroups dataset on a configurable
-// interval and updates Prometheus gauges with aggregated traffic statistics.
-// Tracks request counts by method/status and byte totals by type. Each poll
-// cycle is wrapped in an OpenTelemetry span for trace correlation.
+// interval. Updates Prometheus gauges with aggregated traffic statistics and
+// ships raw traffic groups to Loki as structured JSON logs. Each poll cycle
+// is wrapped in an OpenTelemetry span for trace correlation.
 // -------------------------------------------------------------------------------
 
 package collector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
+	"github.com/afreidah/cloudflare-log-collector/internal/loki"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
 	"go.opentelemetry.io/otel/attribute"
@@ -27,21 +29,25 @@ import (
 // HTTP COLLECTOR
 // -------------------------------------------------------------------------
 
-// HTTPCollector polls Cloudflare for HTTP traffic stats and updates Prometheus
-// gauges with the aggregated data.
+// HTTPCollector polls Cloudflare for HTTP traffic stats, updates Prometheus
+// gauges, and ships raw traffic data to Loki.
 type HTTPCollector struct {
 	cf           *cloudflare.Client
+	loki         *loki.Client
 	pollInterval time.Duration
 	lastSeen     time.Time
+	batchSize    int
 }
 
 // NewHTTPCollector creates an HTTP traffic collector with the given backfill
 // window applied to the initial poll.
-func NewHTTPCollector(cf *cloudflare.Client, pollInterval time.Duration, backfillWindow time.Duration) *HTTPCollector {
+func NewHTTPCollector(cf *cloudflare.Client, lokiClient *loki.Client, pollInterval time.Duration, backfillWindow time.Duration, batchSize int) *HTTPCollector {
 	return &HTTPCollector{
 		cf:           cf,
+		loki:         lokiClient,
 		pollInterval: pollInterval,
 		lastSeen:     time.Now().UTC().Add(-backfillWindow),
+		batchSize:    batchSize,
 	}
 }
 
@@ -105,7 +111,12 @@ func (c *HTTPCollector) poll(ctx context.Context) {
 	// --- Update Prometheus gauges ---
 	c.updateMetrics(groups)
 
-	slog.InfoContext(ctx, "HTTP traffic metrics updated")
+	// --- Ship raw groups to Loki ---
+	if err := c.shipToLoki(ctx, groups); err != nil {
+		slog.ErrorContext(ctx, "Failed to ship HTTP traffic to Loki", "error", err)
+	} else {
+		slog.InfoContext(ctx, "HTTP traffic pushed to Loki", "groups", len(groups))
+	}
 
 	c.lastSeen = until
 }
@@ -122,11 +133,48 @@ func (c *HTTPCollector) updateMetrics(groups []cloudflare.HTTPRequestGroup) {
 	for _, g := range groups {
 		method := g.Dimensions.ClientRequestHTTPMethodName
 		status := fmt.Sprintf("%d", g.Dimensions.EdgeResponseStatus)
+		country := g.Dimensions.ClientCountryName
 
-		metrics.HTTPRequests.WithLabelValues(method, status).Add(float64(g.Count))
+		metrics.HTTPRequests.WithLabelValues(method, status, country).Add(float64(g.Count))
 
 		totalEdgeBytes += g.Sum.EdgeResponseBytes
 	}
 
 	metrics.HTTPBytes.WithLabelValues("edge").Set(float64(totalEdgeBytes))
+}
+
+// shipToLoki sends HTTP traffic groups to Loki as JSON log lines in batches.
+func (c *HTTPCollector) shipToLoki(ctx context.Context, groups []cloudflare.HTTPRequestGroup) error {
+	labels := map[string]string{
+		"job":  "cloudflare",
+		"type": "http_traffic",
+		"zone": "munchbox.cc",
+	}
+
+	entries := make([]loki.Entry, 0, len(groups))
+	for _, g := range groups {
+		line, err := json.Marshal(g)
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to marshal HTTP traffic group", "error", err)
+			continue
+		}
+
+		t, err := time.Parse(time.RFC3339Nano, g.Dimensions.Datetime)
+		if err != nil {
+			t = time.Now().UTC()
+		}
+
+		entries = append(entries, loki.NewEntry(t, string(line)))
+	}
+
+	// --- Send in batches ---
+	for i := 0; i < len(entries); i += c.batchSize {
+		end := min(i+c.batchSize, len(entries))
+
+		if err := c.loki.Push(ctx, labels, entries[i:end]); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
