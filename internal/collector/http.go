@@ -22,6 +22,7 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/loki"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -129,9 +130,9 @@ func (c *HTTPCollector) poll(ctx context.Context) {
 
 // updateMetrics resets and repopulates Prometheus gauges from the latest poll data.
 func (c *HTTPCollector) updateMetrics(groups []cloudflare.HTTPRequestGroup) {
-	// --- Reset gauges before repopulating ---
-	metrics.HTTPRequests.Reset()
-	metrics.HTTPBytes.Reset()
+	// --- Reset only this zone's gauges before repopulating ---
+	metrics.HTTPRequests.DeletePartialMatch(prometheus.Labels{"zone": c.zoneName})
+	metrics.HTTPBytes.DeletePartialMatch(prometheus.Labels{"zone": c.zoneName})
 
 	// --- Aggregate totals across all groups ---
 	var totalEdgeBytes int64
