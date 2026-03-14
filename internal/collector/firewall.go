@@ -92,15 +92,15 @@ func (c *FirewallCollector) poll(ctx context.Context) {
 
 	events, err := c.cf.QueryFirewallEvents(ctx, c.zoneID, c.lastSeen, until)
 	if err != nil {
-		slog.ErrorContext(ctx, "Firewall poll failed", "error", err)
-		metrics.PollTotal.WithLabelValues("firewall", "error").Inc()
-		metrics.PollDuration.WithLabelValues("firewall").Observe(time.Since(start).Seconds())
+		slog.ErrorContext(ctx, "Firewall poll failed", "zone", c.zoneName, "error", err)
+		metrics.PollTotal.WithLabelValues("firewall", c.zoneName, "error").Inc()
+		metrics.PollDuration.WithLabelValues("firewall", c.zoneName).Observe(time.Since(start).Seconds())
 		return
 	}
 
-	metrics.PollTotal.WithLabelValues("firewall", "success").Inc()
-	metrics.PollDuration.WithLabelValues("firewall").Observe(time.Since(start).Seconds())
-	metrics.LastPollTimestamp.WithLabelValues("firewall").Set(float64(time.Now().Unix()))
+	metrics.PollTotal.WithLabelValues("firewall", c.zoneName, "success").Inc()
+	metrics.PollDuration.WithLabelValues("firewall", c.zoneName).Observe(time.Since(start).Seconds())
+	metrics.LastPollTimestamp.WithLabelValues("firewall", c.zoneName).Set(float64(time.Now().Unix()))
 
 	span.SetAttributes(attribute.Int("cflog.event_count", len(events)))
 
@@ -121,7 +121,7 @@ func (c *FirewallCollector) poll(ctx context.Context) {
 
 	// --- Update metrics and cursor ---
 	for i := range events {
-		metrics.FirewallEventsTotal.WithLabelValues(events[i].Action).Inc()
+		metrics.FirewallEventsTotal.WithLabelValues(events[i].Action, c.zoneName).Inc()
 	}
 
 	// --- Advance cursor to the last event's timestamp ---
