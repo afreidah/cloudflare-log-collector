@@ -32,17 +32,21 @@ import (
 type FirewallCollector struct {
 	cf           *cloudflare.Client
 	loki         *loki.Client
+	zoneID       string
+	zoneName     string
 	pollInterval time.Duration
 	lastSeen     time.Time
 	batchSize    int
 }
 
-// NewFirewallCollector creates a firewall event collector with the given backfill
-// window applied to the initial poll.
-func NewFirewallCollector(cf *cloudflare.Client, lokiClient *loki.Client, pollInterval time.Duration, backfillWindow time.Duration, batchSize int) *FirewallCollector {
+// NewFirewallCollector creates a firewall event collector for the given zone
+// with the backfill window applied to the initial poll.
+func NewFirewallCollector(cf *cloudflare.Client, lokiClient *loki.Client, zoneID, zoneName string, pollInterval, backfillWindow time.Duration, batchSize int) *FirewallCollector {
 	return &FirewallCollector{
 		cf:           cf,
 		loki:         lokiClient,
+		zoneID:       zoneID,
+		zoneName:     zoneName,
 		pollInterval: pollInterval,
 		lastSeen:     time.Now().UTC().Add(-backfillWindow),
 		batchSize:    batchSize,
@@ -53,6 +57,7 @@ func NewFirewallCollector(cf *cloudflare.Client, lokiClient *loki.Client, pollIn
 // the lifecycle.Service interface.
 func (c *FirewallCollector) Run(ctx context.Context) error {
 	slog.Info("Firewall collector started",
+		"zone", c.zoneName,
 		"poll_interval", c.pollInterval,
 		"backfill_from", c.lastSeen.Format(time.RFC3339),
 	)
@@ -78,13 +83,14 @@ func (c *FirewallCollector) Run(ctx context.Context) error {
 func (c *FirewallCollector) poll(ctx context.Context) {
 	ctx, span := telemetry.StartSpan(ctx, "firewall.poll",
 		telemetry.AttrDataset.String("firewall"),
+		attribute.String("cflog.zone", c.zoneName),
 	)
 	defer span.End()
 
 	start := time.Now()
 	until := time.Now().UTC()
 
-	events, err := c.cf.QueryFirewallEvents(ctx, c.lastSeen, until)
+	events, err := c.cf.QueryFirewallEvents(ctx, c.zoneID, c.lastSeen, until)
 	if err != nil {
 		slog.ErrorContext(ctx, "Firewall poll failed", "error", err)
 		metrics.PollTotal.WithLabelValues("firewall", "error").Inc()
@@ -130,7 +136,7 @@ func (c *FirewallCollector) shipToLoki(ctx context.Context, events []cloudflare.
 	labels := map[string]string{
 		"job":  "cloudflare",
 		"type": "firewall",
-		"zone": "munchbox.cc",
+		"zone": c.zoneName,
 	}
 
 	entries := make([]loki.Entry, 0, len(events))

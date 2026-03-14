@@ -34,9 +34,15 @@ type Config struct {
 // CloudflareConfig holds Cloudflare API connection settings.
 type CloudflareConfig struct {
 	APIToken       string        `yaml:"api_token"`
-	ZoneID         string        `yaml:"zone_id"`
+	Zones          []ZoneConfig  `yaml:"zones"`
 	PollInterval   time.Duration `yaml:"poll_interval"`
 	BackfillWindow time.Duration `yaml:"backfill_window"`
+}
+
+// ZoneConfig identifies a single Cloudflare zone to monitor.
+type ZoneConfig struct {
+	ID   string `yaml:"id"`
+	Name string `yaml:"name"`
 }
 
 // LokiConfig holds Loki push API settings.
@@ -105,8 +111,16 @@ func (c *Config) setDefaultsAndValidate() error {
 	if c.Cloudflare.APIToken == "" {
 		errors = append(errors, "cloudflare.api_token is required")
 	}
-	if c.Cloudflare.ZoneID == "" {
-		errors = append(errors, "cloudflare.zone_id is required")
+	if len(c.Cloudflare.Zones) == 0 {
+		errors = append(errors, "cloudflare.zones requires at least one zone")
+	}
+	for i, z := range c.Cloudflare.Zones {
+		if z.ID == "" {
+			errors = append(errors, fmt.Sprintf("cloudflare.zones[%d].id is required", i))
+		}
+		if z.Name == "" {
+			errors = append(errors, fmt.Sprintf("cloudflare.zones[%d].name is required", i))
+		}
 	}
 	if c.Cloudflare.PollInterval == 0 {
 		c.Cloudflare.PollInterval = 5 * time.Minute

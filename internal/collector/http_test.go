@@ -37,7 +37,7 @@ func TestUpdateMetrics_CountryLabel(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(nil, lokiClient, time.Minute, time.Hour, 100)
+	c := NewHTTPCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
 
 	groups := []cloudflare.HTTPRequestGroup{
 		{
@@ -83,7 +83,7 @@ func TestUpdateMetrics_ResetsOnEachCall(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(nil, lokiClient, time.Minute, time.Hour, 100)
+	c := NewHTTPCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
 
 	// --- First call ---
 	c.updateMetrics([]cloudflare.HTTPRequestGroup{
@@ -135,7 +135,7 @@ func TestShipToLoki_SendsJSONEntries(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(nil, lokiClient, time.Minute, time.Hour, 100)
+	c := NewHTTPCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
 
 	groups := []cloudflare.HTTPRequestGroup{
 		{
@@ -181,6 +181,9 @@ func TestShipToLoki_SendsJSONEntries(t *testing.T) {
 	if stream.Stream["job"] != "cloudflare" {
 		t.Errorf("stream job = %q, want %q", stream.Stream["job"], "cloudflare")
 	}
+	if stream.Stream["zone"] != "example.com" {
+		t.Errorf("stream zone = %q, want %q", stream.Stream["zone"], "example.com")
+	}
 
 	if len(stream.Values) != 1 {
 		t.Fatalf("got %d values, want 1", len(stream.Values))
@@ -210,7 +213,7 @@ func TestShipToLoki_Batching(t *testing.T) {
 	lokiClient := loki.NewClient(ts.URL, "fake")
 
 	// --- Batch size of 2 with 5 groups should produce 3 requests ---
-	c := NewHTTPCollector(nil, lokiClient, time.Minute, time.Hour, 2)
+	c := NewHTTPCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 2)
 
 	groups := make([]cloudflare.HTTPRequestGroup, 5)
 	for i := range groups {
@@ -242,7 +245,7 @@ func TestShipToLoki_EmptyGroups(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(nil, lokiClient, time.Minute, time.Hour, 100)
+	c := NewHTTPCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
 
 	err := c.shipToLoki(context.Background(), nil)
 	if err != nil {
@@ -258,7 +261,7 @@ func TestShipToLoki_ServerError(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(nil, lokiClient, time.Minute, time.Hour, 100)
+	c := NewHTTPCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
 
 	groups := []cloudflare.HTTPRequestGroup{
 		{

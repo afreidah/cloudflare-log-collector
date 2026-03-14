@@ -70,30 +70,32 @@ func main() {
 	// --- Set build info metric ---
 	metrics.BuildInfo.WithLabelValues(telemetry.Version, runtime.Version()).Set(1)
 
-	// --- Create Cloudflare client ---
-	cfClient := cloudflare.NewClient(cfg.Cloudflare.APIToken, cfg.Cloudflare.ZoneID)
-
-	// --- Create Loki client ---
+	// --- Create shared clients ---
+	cfClient := cloudflare.NewClient(cfg.Cloudflare.APIToken)
 	lokiClient := loki.NewClient(cfg.Loki.Endpoint, cfg.Loki.TenantID)
 
 	// --- Start background collectors with lifecycle manager ---
 	sm := lifecycle.NewManager()
 
-	firewallCollector := collector.NewFirewallCollector(
-		cfClient, lokiClient,
-		cfg.Cloudflare.PollInterval,
-		cfg.Cloudflare.BackfillWindow,
-		cfg.Loki.BatchSize,
-	)
-	sm.Register("firewall-collector", firewallCollector)
+	for _, zone := range cfg.Cloudflare.Zones {
+		fw := collector.NewFirewallCollector(
+			cfClient, lokiClient,
+			zone.ID, zone.Name,
+			cfg.Cloudflare.PollInterval,
+			cfg.Cloudflare.BackfillWindow,
+			cfg.Loki.BatchSize,
+		)
+		sm.Register(fmt.Sprintf("firewall-%s", zone.Name), fw)
 
-	httpCollector := collector.NewHTTPCollector(
-		cfClient, lokiClient,
-		cfg.Cloudflare.PollInterval,
-		cfg.Cloudflare.BackfillWindow,
-		cfg.Loki.BatchSize,
-	)
-	sm.Register("http-collector", httpCollector)
+		hc := collector.NewHTTPCollector(
+			cfClient, lokiClient,
+			zone.ID, zone.Name,
+			cfg.Cloudflare.PollInterval,
+			cfg.Cloudflare.BackfillWindow,
+			cfg.Loki.BatchSize,
+		)
+		sm.Register(fmt.Sprintf("http-%s", zone.Name), hc)
+	}
 
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
@@ -121,8 +123,15 @@ func main() {
 	}
 
 	// --- Log startup info ---
+	// --- Build zone name list for startup log ---
+	zoneNames := make([]string, len(cfg.Cloudflare.Zones))
+	for i, z := range cfg.Cloudflare.Zones {
+		zoneNames[i] = z.Name
+	}
+
 	slog.Info("Cloudflare Log Collector starting",
 		"version", telemetry.Version,
+		"zones", zoneNames,
 		"listen", cfg.Metrics.Listen,
 		"poll_interval", cfg.Cloudflare.PollInterval,
 		"backfill_window", cfg.Cloudflare.BackfillWindow,

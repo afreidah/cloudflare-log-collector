@@ -40,7 +40,7 @@ func TestFirewallShipToLoki_SendsJSONEntries(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewFirewallCollector(nil, lokiClient, time.Minute, time.Hour, 100)
+	c := NewFirewallCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
 
 	events := []cloudflare.FirewallEvent{
 		{
@@ -79,6 +79,9 @@ func TestFirewallShipToLoki_SendsJSONEntries(t *testing.T) {
 	if stream.Stream["job"] != "cloudflare" {
 		t.Errorf("stream job = %q, want %q", stream.Stream["job"], "cloudflare")
 	}
+	if stream.Stream["zone"] != "example.com" {
+		t.Errorf("stream zone = %q, want %q", stream.Stream["zone"], "example.com")
+	}
 
 	// --- Verify the log line contains the event data ---
 	var event cloudflare.FirewallEvent
@@ -104,7 +107,7 @@ func TestFirewallShipToLoki_Batching(t *testing.T) {
 	lokiClient := loki.NewClient(ts.URL, "fake")
 
 	// --- Batch size of 3 with 7 events should produce 3 requests ---
-	c := NewFirewallCollector(nil, lokiClient, time.Minute, time.Hour, 3)
+	c := NewFirewallCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 3)
 
 	events := make([]cloudflare.FirewallEvent, 7)
 	for i := range events {
@@ -133,7 +136,7 @@ func TestFirewallShipToLoki_ServerError(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewFirewallCollector(nil, lokiClient, time.Minute, time.Hour, 100)
+	c := NewFirewallCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
 
 	events := []cloudflare.FirewallEvent{
 		{
@@ -162,7 +165,7 @@ func TestFirewallShipToLoki_InvalidTimestamp(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewFirewallCollector(nil, lokiClient, time.Minute, time.Hour, 100)
+	c := NewFirewallCollector(nil, lokiClient, "zone1", "example.com", time.Minute, time.Hour, 100)
 
 	// --- Event with unparseable timestamp should still be shipped ---
 	events := []cloudflare.FirewallEvent{

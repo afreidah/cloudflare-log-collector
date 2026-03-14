@@ -34,17 +34,21 @@ import (
 type HTTPCollector struct {
 	cf           *cloudflare.Client
 	loki         *loki.Client
+	zoneID       string
+	zoneName     string
 	pollInterval time.Duration
 	lastSeen     time.Time
 	batchSize    int
 }
 
-// NewHTTPCollector creates an HTTP traffic collector with the given backfill
-// window applied to the initial poll.
-func NewHTTPCollector(cf *cloudflare.Client, lokiClient *loki.Client, pollInterval time.Duration, backfillWindow time.Duration, batchSize int) *HTTPCollector {
+// NewHTTPCollector creates an HTTP traffic collector for the given zone
+// with the backfill window applied to the initial poll.
+func NewHTTPCollector(cf *cloudflare.Client, lokiClient *loki.Client, zoneID, zoneName string, pollInterval, backfillWindow time.Duration, batchSize int) *HTTPCollector {
 	return &HTTPCollector{
 		cf:           cf,
 		loki:         lokiClient,
+		zoneID:       zoneID,
+		zoneName:     zoneName,
 		pollInterval: pollInterval,
 		lastSeen:     time.Now().UTC().Add(-backfillWindow),
 		batchSize:    batchSize,
@@ -55,6 +59,7 @@ func NewHTTPCollector(cf *cloudflare.Client, lokiClient *loki.Client, pollInterv
 // the lifecycle.Service interface.
 func (c *HTTPCollector) Run(ctx context.Context) error {
 	slog.Info("HTTP collector started",
+		"zone", c.zoneName,
 		"poll_interval", c.pollInterval,
 		"backfill_from", c.lastSeen.Format(time.RFC3339),
 	)
@@ -80,13 +85,14 @@ func (c *HTTPCollector) Run(ctx context.Context) error {
 func (c *HTTPCollector) poll(ctx context.Context) {
 	ctx, span := telemetry.StartSpan(ctx, "http.poll",
 		telemetry.AttrDataset.String("http"),
+		attribute.String("cflog.zone", c.zoneName),
 	)
 	defer span.End()
 
 	start := time.Now()
 	until := time.Now().UTC()
 
-	groups, err := c.cf.QueryHTTPRequests(ctx, c.lastSeen, until)
+	groups, err := c.cf.QueryHTTPRequests(ctx, c.zoneID, c.lastSeen, until)
 	if err != nil {
 		slog.ErrorContext(ctx, "HTTP traffic poll failed", "error", err)
 		metrics.PollTotal.WithLabelValues("http", "error").Inc()
@@ -148,7 +154,7 @@ func (c *HTTPCollector) shipToLoki(ctx context.Context, groups []cloudflare.HTTP
 	labels := map[string]string{
 		"job":  "cloudflare",
 		"type": "http_traffic",
-		"zone": "munchbox.cc",
+		"zone": c.zoneName,
 	}
 
 	entries := make([]loki.Entry, 0, len(groups))

@@ -23,7 +23,9 @@ func validConfig() Config {
 	return Config{
 		Cloudflare: CloudflareConfig{
 			APIToken: "test-token",
-			ZoneID:   "test-zone-id",
+			Zones: []ZoneConfig{
+				{ID: "test-zone-id", Name: "example.com"},
+			},
 		},
 		Loki: LokiConfig{
 			Endpoint: "http://localhost:3100",
@@ -50,7 +52,9 @@ func TestLoadConfig_ValidMinimal(t *testing.T) {
 	path := writeConfigFile(t, `
 cloudflare:
   api_token: "tok"
-  zone_id: "zid"
+  zones:
+    - id: "zid"
+      name: "example.com"
 loki:
   endpoint: "http://localhost:3100"
 `)
@@ -63,8 +67,14 @@ loki:
 	if cfg.Cloudflare.APIToken != "tok" {
 		t.Errorf("api_token = %q, want %q", cfg.Cloudflare.APIToken, "tok")
 	}
-	if cfg.Cloudflare.ZoneID != "zid" {
-		t.Errorf("zone_id = %q, want %q", cfg.Cloudflare.ZoneID, "zid")
+	if len(cfg.Cloudflare.Zones) != 1 {
+		t.Fatalf("zones count = %d, want 1", len(cfg.Cloudflare.Zones))
+	}
+	if cfg.Cloudflare.Zones[0].ID != "zid" {
+		t.Errorf("zones[0].id = %q, want %q", cfg.Cloudflare.Zones[0].ID, "zid")
+	}
+	if cfg.Cloudflare.Zones[0].Name != "example.com" {
+		t.Errorf("zones[0].name = %q, want %q", cfg.Cloudflare.Zones[0].Name, "example.com")
 	}
 }
 
@@ -75,7 +85,9 @@ func TestLoadConfig_EnvVarExpansion(t *testing.T) {
 	path := writeConfigFile(t, `
 cloudflare:
   api_token: "${CF_TEST_TOKEN}"
-  zone_id: "${CF_TEST_ZONE}"
+  zones:
+    - id: "${CF_TEST_ZONE}"
+      name: "example.com"
 loki:
   endpoint: "http://localhost:3100"
 `)
@@ -88,8 +100,8 @@ loki:
 	if cfg.Cloudflare.APIToken != "expanded-token" {
 		t.Errorf("api_token = %q, want %q", cfg.Cloudflare.APIToken, "expanded-token")
 	}
-	if cfg.Cloudflare.ZoneID != "expanded-zone" {
-		t.Errorf("zone_id = %q, want %q", cfg.Cloudflare.ZoneID, "expanded-zone")
+	if cfg.Cloudflare.Zones[0].ID != "expanded-zone" {
+		t.Errorf("zones[0].id = %q, want %q", cfg.Cloudflare.Zones[0].ID, "expanded-zone")
 	}
 }
 
@@ -225,13 +237,33 @@ func TestValidation_MissingAPIToken(t *testing.T) {
 	}
 }
 
-func TestValidation_MissingZoneID(t *testing.T) {
+func TestValidation_MissingZones(t *testing.T) {
 	cfg := validConfig()
-	cfg.Cloudflare.ZoneID = ""
+	cfg.Cloudflare.Zones = nil
 
 	err := cfg.setDefaultsAndValidate()
 	if err == nil {
-		t.Error("validation should fail when zone_id is empty")
+		t.Error("validation should fail when zones is empty")
+	}
+}
+
+func TestValidation_MissingZoneID(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cloudflare.Zones[0].ID = ""
+
+	err := cfg.setDefaultsAndValidate()
+	if err == nil {
+		t.Error("validation should fail when zone id is empty")
+	}
+}
+
+func TestValidation_MissingZoneName(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cloudflare.Zones[0].Name = ""
+
+	err := cfg.setDefaultsAndValidate()
+	if err == nil {
+		t.Error("validation should fail when zone name is empty")
 	}
 }
 
@@ -253,9 +285,9 @@ func TestValidation_MultipleErrors(t *testing.T) {
 		t.Fatal("validation should fail with multiple errors")
 	}
 
-	// --- Should report all three missing required fields ---
+	// --- Should report all missing required fields ---
 	errStr := err.Error()
-	if !contains(errStr, "api_token") || !contains(errStr, "zone_id") || !contains(errStr, "loki.endpoint") {
+	if !contains(errStr, "api_token") || !contains(errStr, "zones") || !contains(errStr, "loki.endpoint") {
 		t.Errorf("error should mention all missing fields, got: %v", err)
 	}
 }

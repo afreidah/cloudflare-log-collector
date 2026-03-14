@@ -57,9 +57,9 @@ func TestQueryFirewallEvents_Success(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 
-	client := newTestClient(ts.URL, "test-token", "test-zone")
+	client := newTestClient(ts.URL, "test-token")
 
-	events, err := client.QueryFirewallEvents(context.Background(),
+	events, err := client.QueryFirewallEvents(context.Background(), "test-zone",
 		time.Now().Add(-1*time.Hour), time.Now())
 	if err != nil {
 		t.Fatalf("QueryFirewallEvents() error = %v", err)
@@ -85,9 +85,9 @@ func TestQueryFirewallEvents_EmptyZones(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 
-	client := newTestClient(ts.URL, "test-token", "test-zone")
+	client := newTestClient(ts.URL, "test-token")
 
-	events, err := client.QueryFirewallEvents(context.Background(),
+	events, err := client.QueryFirewallEvents(context.Background(), "test-zone",
 		time.Now().Add(-1*time.Hour), time.Now())
 	if err != nil {
 		t.Fatalf("QueryFirewallEvents() error = %v", err)
@@ -139,9 +139,9 @@ func TestQueryHTTPRequests_Success(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 
-	client := newTestClient(ts.URL, "test-token", "test-zone")
+	client := newTestClient(ts.URL, "test-token")
 
-	groups, err := client.QueryHTTPRequests(context.Background(),
+	groups, err := client.QueryHTTPRequests(context.Background(), "test-zone",
 		time.Now().Add(-1*time.Hour), time.Now())
 	if err != nil {
 		t.Fatalf("QueryHTTPRequests() error = %v", err)
@@ -169,9 +169,9 @@ func TestDoQuery_GraphQLError(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 
-	client := newTestClient(ts.URL, "test-token", "bad-zone")
+	client := newTestClient(ts.URL, "test-token")
 
-	_, err := client.QueryFirewallEvents(context.Background(),
+	_, err := client.QueryFirewallEvents(context.Background(), "test-zone",
 		time.Now().Add(-1*time.Hour), time.Now())
 	if err == nil {
 		t.Error("expected error for GraphQL error response")
@@ -185,9 +185,9 @@ func TestDoQuery_HTTPError(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 
-	client := newTestClient(ts.URL, "bad-token", "test-zone")
+	client := newTestClient(ts.URL, "bad-token")
 
-	_, err := client.QueryFirewallEvents(context.Background(),
+	_, err := client.QueryFirewallEvents(context.Background(), "test-zone",
 		time.Now().Add(-1*time.Hour), time.Now())
 	if err == nil {
 		t.Error("expected error for HTTP 401")
@@ -201,9 +201,9 @@ func TestDoQuery_InvalidJSON(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 
-	client := newTestClient(ts.URL, "test-token", "test-zone")
+	client := newTestClient(ts.URL, "test-token")
 
-	_, err := client.QueryFirewallEvents(context.Background(),
+	_, err := client.QueryFirewallEvents(context.Background(), "test-zone",
 		time.Now().Add(-1*time.Hour), time.Now())
 	if err == nil {
 		t.Error("expected error for invalid JSON response")
@@ -211,9 +211,9 @@ func TestDoQuery_InvalidJSON(t *testing.T) {
 }
 
 func TestDoQuery_ServerDown(t *testing.T) {
-	client := newTestClient("http://localhost:1", "test-token", "test-zone")
+	client := newTestClient("http://localhost:1", "test-token")
 
-	_, err := client.QueryFirewallEvents(context.Background(),
+	_, err := client.QueryFirewallEvents(context.Background(), "test-zone",
 		time.Now().Add(-1*time.Hour), time.Now())
 	if err == nil {
 		t.Error("expected error when server is unreachable")
@@ -236,9 +236,9 @@ func TestDoQuery_RequestBody(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 
-	client := newTestClient(ts.URL, "test-token", "my-zone")
+	client := newTestClient(ts.URL, "test-token")
 
-	_, _ = client.QueryFirewallEvents(context.Background(),
+	_, _ = client.QueryFirewallEvents(context.Background(), "my-zone",
 		time.Date(2026, 3, 13, 10, 0, 0, 0, time.UTC),
 		time.Date(2026, 3, 13, 11, 0, 0, 0, time.UTC))
 
@@ -260,8 +260,8 @@ func TestDoQuery_RequestBody(t *testing.T) {
 // -------------------------------------------------------------------------
 
 // newTestClient creates a Client pointing at the given test server URL.
-func newTestClient(url, token, zone string) *Client {
-	c := NewClient(token, zone)
+func newTestClient(url, token string) *Client {
+	c := NewClient(token)
 	c.httpClient = &http.Client{Timeout: 5 * time.Second}
 	// --- Override the endpoint to point at httptest server ---
 	c.endpoint = url

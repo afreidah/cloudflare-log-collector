@@ -34,16 +34,14 @@ const graphQLEndpoint = "https://api.cloudflare.com/client/v4/graphql"
 // Client talks to the Cloudflare GraphQL Analytics API.
 type Client struct {
 	apiToken   string
-	zoneID     string
 	endpoint   string
 	httpClient *http.Client
 }
 
 // NewClient creates a Cloudflare GraphQL client.
-func NewClient(apiToken, zoneID string) *Client {
+func NewClient(apiToken string) *Client {
 	return &Client{
 		apiToken: apiToken,
-		zoneID:   zoneID,
 		endpoint: graphQLEndpoint,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
@@ -175,15 +173,15 @@ const httpRequestQuery = `query ($zoneId: String!, $since: String!, $until: Stri
 // API METHODS
 // -------------------------------------------------------------------------
 
-// QueryFirewallEvents fetches firewall events in the given time range.
-func (c *Client) QueryFirewallEvents(ctx context.Context, since, until time.Time) ([]FirewallEvent, error) {
+// QueryFirewallEvents fetches firewall events for the given zone and time range.
+func (c *Client) QueryFirewallEvents(ctx context.Context, zoneID string, since, until time.Time) ([]FirewallEvent, error) {
 	vars := map[string]any{
-		"zoneId": c.zoneID,
+		"zoneId": zoneID,
 		"since":  since.UTC().Format(time.RFC3339),
 		"until":  until.UTC().Format(time.RFC3339),
 	}
 
-	body, err := c.doQuery(ctx, firewallQuery, vars)
+	body, err := c.doQuery(ctx, zoneID, firewallQuery, vars)
 	if err != nil {
 		return nil, fmt.Errorf("firewall query: %w", err)
 	}
@@ -200,15 +198,15 @@ func (c *Client) QueryFirewallEvents(ctx context.Context, since, until time.Time
 	return resp.Viewer.Zones[0].FirewallEventsAdaptive, nil
 }
 
-// QueryHTTPRequests fetches aggregated HTTP traffic stats in the given time range.
-func (c *Client) QueryHTTPRequests(ctx context.Context, since, until time.Time) ([]HTTPRequestGroup, error) {
+// QueryHTTPRequests fetches aggregated HTTP traffic stats for the given zone and time range.
+func (c *Client) QueryHTTPRequests(ctx context.Context, zoneID string, since, until time.Time) ([]HTTPRequestGroup, error) {
 	vars := map[string]any{
-		"zoneId": c.zoneID,
+		"zoneId": zoneID,
 		"since":  since.UTC().Format(time.RFC3339),
 		"until":  until.UTC().Format(time.RFC3339),
 	}
 
-	body, err := c.doQuery(ctx, httpRequestQuery, vars)
+	body, err := c.doQuery(ctx, zoneID, httpRequestQuery, vars)
 	if err != nil {
 		return nil, fmt.Errorf("http request query: %w", err)
 	}
@@ -230,9 +228,9 @@ func (c *Client) QueryHTTPRequests(ctx context.Context, since, until time.Time) 
 // -------------------------------------------------------------------------
 
 // doQuery sends a GraphQL request and returns the data field from the response.
-func (c *Client) doQuery(ctx context.Context, query string, variables map[string]any) (json.RawMessage, error) {
+func (c *Client) doQuery(ctx context.Context, zoneID, query string, variables map[string]any) (json.RawMessage, error) {
 	ctx, span := telemetry.StartSpan(ctx, "cloudflare.graphql",
-		attribute.String("cflog.zone_id", c.zoneID),
+		attribute.String("cflog.zone_id", zoneID),
 	)
 	defer span.End()
 
