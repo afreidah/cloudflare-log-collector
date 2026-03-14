@@ -160,6 +160,10 @@ func (c *FirewallCollector) shipToLoki(ctx context.Context, events []cloudflare.
 		"zone": c.zoneName,
 	}
 
+	// --- Use current time for Loki entry timestamps to avoid rejection by
+	// Loki's reject_old_samples_max_age. The original event timestamp is
+	// preserved in the JSON log line body for querying. ---
+	now := time.Now().UTC()
 	entries := make([]loki.Entry, 0, len(events))
 	for i := range events {
 		line, err := json.Marshal(&events[i])
@@ -168,12 +172,7 @@ func (c *FirewallCollector) shipToLoki(ctx context.Context, events []cloudflare.
 			continue
 		}
 
-		t, err := time.Parse(time.RFC3339Nano, events[i].Datetime)
-		if err != nil {
-			t = time.Now().UTC()
-		}
-
-		entries = append(entries, loki.NewEntry(t, string(line)))
+		entries = append(entries, loki.NewEntry(now, string(line)))
 	}
 
 	// --- Send in batches ---
