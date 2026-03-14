@@ -114,8 +114,8 @@ func (c *FirewallCollector) poll(ctx context.Context) {
 	slog.InfoContext(ctx, "Firewall events pushed to Loki", "count", len(events))
 
 	// --- Update metrics and cursor ---
-	for _, e := range events {
-		metrics.FirewallEventsTotal.WithLabelValues(e.Action).Inc()
+	for i := range events {
+		metrics.FirewallEventsTotal.WithLabelValues(events[i].Action).Inc()
 	}
 
 	// --- Advance cursor to the last event's timestamp ---
@@ -134,14 +134,14 @@ func (c *FirewallCollector) shipToLoki(ctx context.Context, events []cloudflare.
 	}
 
 	entries := make([]loki.Entry, 0, len(events))
-	for _, e := range events {
-		line, err := json.Marshal(e)
+	for i := range events {
+		line, err := json.Marshal(&events[i])
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to marshal firewall event", "error", err)
 			continue
 		}
 
-		t, err := time.Parse(time.RFC3339Nano, e.Datetime)
+		t, err := time.Parse(time.RFC3339Nano, events[i].Datetime)
 		if err != nil {
 			t = time.Now().UTC()
 		}
@@ -151,10 +151,7 @@ func (c *FirewallCollector) shipToLoki(ctx context.Context, events []cloudflare.
 
 	// --- Send in batches ---
 	for i := 0; i < len(entries); i += c.batchSize {
-		end := i + c.batchSize
-		if end > len(entries) {
-			end = len(entries)
-		}
+		end := min(i+c.batchSize, len(entries))
 
 		if err := c.loki.Push(ctx, labels, entries[i:end]); err != nil {
 			return err

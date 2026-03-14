@@ -84,6 +84,9 @@ vet: ## Run Go vet static analysis
 lint: ## Run Go linter
 	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.10.1 run ./...
 
+govulncheck: ## Run Go vulnerability scanner
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
 run: ## Run locally (requires config.yaml)
 	go run ./cmd/cloudflare-log-collector -config config.yaml
 
@@ -96,5 +99,5 @@ clean: ## Remove build artifacts
 	rm -f cloudflare-log-collector
 	docker rmi $(FULL_TAG) 2>/dev/null || true
 
-.PHONY: help builder build docker push test vet lint run clean
+.PHONY: help builder build docker push test vet lint govulncheck run clean
 .DEFAULT_GOAL := help
