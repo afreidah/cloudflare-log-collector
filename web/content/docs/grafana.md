@@ -5,6 +5,8 @@ weight: 15
 
 <p class="landing-subheader">Pre-built Grafana dashboard for monitoring Cloudflare analytics collection</p>
 
+The dashboard tracks the full collection pipeline at a glance. **Poll health** panels show success/failure rates, latency histograms, and last-poll timestamps for each dataset and zone. **Firewall events** are broken down by action type (block, challenge, allow) with trending counters. **HTTP traffic** panels display request counts by method, status code, and country alongside edge response byte gauges. **Loki push** panels monitor push success rates and latency to catch delivery issues early. Build info and version metadata round out the overview.
+
 ![Grafana Dashboard](/images/grafana.png)
 
 ## Metrics
