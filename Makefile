@@ -106,6 +106,31 @@ release: ## Tag and push to trigger a GitHub Release (reads .version)
 	git push origin $(VERSION)
 
 # -------------------------------------------------------------------------
+# WEBSITE
+# -------------------------------------------------------------------------
+
+WEB_IMAGE  := $(REGISTRY)/cloudflare-log-collector-web
+WEB_TAG    ?= $(VERSION)
+
+web-serve: ## Serve the project website locally
+	cd web && hugo serve
+
+web-build: ## Build the project website
+	cd web && hugo --minify
+
+web-docker: ## Build website Docker image for local architecture
+	docker build --pull -f web/Dockerfile -t $(WEB_IMAGE):$(WEB_TAG) .
+
+web-push: builder ## Build and push multi-arch website image to registry
+	docker buildx build \
+	  --pull \
+	  --platform $(PLATFORMS) \
+	  -f web/Dockerfile \
+	  -t $(WEB_IMAGE):$(WEB_TAG) \
+	  --output type=image,push=true \
+	  .
+
+# -------------------------------------------------------------------------
 # CLEANUP
 # -------------------------------------------------------------------------
 
@@ -114,5 +139,5 @@ clean: ## Remove build artifacts
 	rm -f cloudflare-log-collector
 	docker rmi $(FULL_TAG) 2>/dev/null || true
 
-.PHONY: help builder build docker push test vet lint govulncheck run changelog release clean
+.PHONY: help builder build docker push test vet lint govulncheck run changelog release web-serve web-build web-docker web-push clean
 .DEFAULT_GOAL := help

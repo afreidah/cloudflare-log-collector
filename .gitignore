@@ -1,3 +1,6 @@
 /cloudflare-log-collector
 /config.yaml
 dist/
+web/public/
+web/resources/
+web/.hugo_build.lock

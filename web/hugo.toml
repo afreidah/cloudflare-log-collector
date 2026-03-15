@@ -1,0 +1,36 @@
+baseURL = "https://cloudflare-log-collector.munchbox.cc/"
+languageCode = "en-us"
+title = "cloudflare-log-collector"
+theme = "hugo-theme-relearn"
+
+[params]
+  themeVariant = ["cloudflare-log-collector"]
+  showVisitedLinks = false
+  disableLandingPageButton = false
+  alwaysopen = true
+  collapsibleMenu = true
+  [params.search]
+    disable = true
+  [params.topbar]
+    showTableOfContents = false
+    showBreadcrumbs = false
+    showEditLink = false
+
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+      unsafe = true
+
+[module]
+  [[module.mounts]]
+    source = "content"
+    target = "content"
+  [[module.mounts]]
+    source = "assets"
+    target = "assets"
+  [[module.mounts]]
+    source = "../README.md"
+    target = "assets/repo/README.md"
+  [[module.mounts]]
+    source = "../CHANGELOG.md"
+    target = "assets/repo/CHANGELOG.md"

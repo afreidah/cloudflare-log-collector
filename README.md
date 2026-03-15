@@ -6,6 +6,10 @@
 [![codecov](https://codecov.io/gh/afreidah/cloudflare-log-collector/branch/main/graph/badge.svg)](https://codecov.io/gh/afreidah/cloudflare-log-collector)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+<p align="center">
+  <strong><a href="https://cloudflare-log-collector.munchbox.cc">Project Website</a></strong>
+</p>
+
 A lightweight Go service that polls the Cloudflare GraphQL Analytics API for firewall events and HTTP traffic statistics, ships them into a self-hosted observability stack, and traces every poll cycle with OpenTelemetry.
 
 - **Firewall events** are pushed to Loki as structured JSON log lines for querying in Grafana
@@ -167,6 +171,12 @@ make govulncheck            # Go vulnerability scanner
 make changelog              # generate CHANGELOG.md from git history (git-cliff)
 make release                # tag and push to trigger GitHub Release
 
+# --- Website ---
+make web-serve              # serve project website locally with live reload
+make web-build              # build static site (minified)
+make web-docker             # build website Docker image for local arch
+make web-push               # build and push multi-arch website image
+
 # --- Cleanup ---
 make clean                  # remove build artifacts
 ```
@@ -205,6 +215,13 @@ make clean                  # remove build artifacts
 │       ├── tracing.go                # OTel tracer init, span helpers
 │       ├── tracehandler.go           # slog handler for trace correlation
 │       └── tracehandler_test.go
+├── web/
+│   ├── hugo.toml                     # Hugo site configuration
+│   ├── Dockerfile                    # Multi-stage Hugo + nginx build
+│   ├── content/                      # Site content (Markdown)
+│   ├── layouts/                      # Custom templates and shortcodes
+│   ├── assets/css/                   # Custom theme variant
+│   └── themes/hugo-theme-relearn/    # Documentation theme (submodule)
 └── docs/
     ├── images/
     │   └── grafana.png               # Grafana dashboard screenshot
