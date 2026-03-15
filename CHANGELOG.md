@@ -3,6 +3,14 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.10] - 2026-03-15
+
+### Improved
+- update CHANGELOG.md for v0.1.9 (#10)
+
+### Other
+- general repo housekeeping/setup
+
 ## [0.1.8] - 2026-03-15
 
 ### Added
