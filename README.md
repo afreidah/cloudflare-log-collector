@@ -150,25 +150,32 @@ vault kv put secret/cloudflare api_token="<token>" zone_id="<zone_id>" zone_name
 
 ```bash
 # --- Build ---
-make build
+make build                  # local platform binary
+make docker                 # Docker image for local arch
+make push                   # build and push multi-arch images to registry
 
 # --- Run locally ---
 make run                    # requires config.yaml in project root
 
-# --- Test ---
-make test                   # unit tests with race detector
-
-# --- Lint ---
+# --- Test & Lint ---
+make test                   # unit tests with race detector and coverage
+make vet                    # Go vet static analysis
 make lint                   # golangci-lint
+make govulncheck            # Go vulnerability scanner
 
-# --- Docker (local arch) ---
-make docker
+# --- Release ---
+make changelog              # generate CHANGELOG.md from git history (git-cliff)
+make release                # tag and push to trigger GitHub Release
+
+# --- Cleanup ---
+make clean                  # remove build artifacts
 ```
 
 ## Project Structure
 
 ```
 ├── .version                          # Semantic version tag
+├── cliff.toml                        # git-cliff changelog generation config
 ├── Dockerfile                        # Multi-stage Alpine build
 ├── Makefile                          # Build, test, push targets
 ├── cmd/
@@ -199,6 +206,8 @@ make docker
 │       ├── tracehandler.go           # slog handler for trace correlation
 │       └── tracehandler_test.go
 └── docs/
+    ├── images/
+    │   └── grafana.png               # Grafana dashboard screenshot
     └── style-guide.md                # Code style conventions
 ```
 

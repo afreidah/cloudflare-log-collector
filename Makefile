@@ -91,6 +91,21 @@ run: ## Run locally (requires config.yaml)
 	go run ./cmd/cloudflare-log-collector -config config.yaml
 
 # -------------------------------------------------------------------------
+# CHANGELOG
+# -------------------------------------------------------------------------
+
+changelog: ## Generate CHANGELOG.md from git history
+	git cliff -o CHANGELOG.md
+
+# -------------------------------------------------------------------------
+# RELEASE
+# -------------------------------------------------------------------------
+
+release: ## Tag and push to trigger a GitHub Release (reads .version)
+	git tag $(VERSION)
+	git push origin $(VERSION)
+
+# -------------------------------------------------------------------------
 # CLEANUP
 # -------------------------------------------------------------------------
 
@@ -99,5 +114,5 @@ clean: ## Remove build artifacts
 	rm -f cloudflare-log-collector
 	docker rmi $(FULL_TAG) 2>/dev/null || true
 
-.PHONY: help builder build docker push test vet lint govulncheck run clean
+.PHONY: help builder build docker push test vet lint govulncheck run changelog release clean
 .DEFAULT_GOAL := help
