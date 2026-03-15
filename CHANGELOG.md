@@ -3,6 +3,19 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.11] - 2026-03-15
+
+### Added
+- Add Hugo documentation site (#13)
+- Add Hugo documentation site
+
+### Improved
+- update CHANGELOG.md for v0.1.10 (#11)
+
+### Other
+- Polish documentation site: landing cards, page headers, logo sizing (#15)
+- Polish documentation site: landing cards, page headers, logo sizing
+
 ## [0.1.10] - 2026-03-15
 
 ### Improved
