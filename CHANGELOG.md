@@ -3,6 +3,19 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.12] - 2026-03-16
+
+### Fixed
+- Fix service graph visibility in Tempo (#18)
+- Fix service graph visibility in Tempo by using CLIENT span kind
+
+### Improved
+- update CHANGELOG.md for v0.1.11 (#16)
+
+### Other
+- Move logo above title in README and reorder header elements
+- added logo to readme
+
 ## [0.1.11] - 2026-03-15
 
 ### Added
