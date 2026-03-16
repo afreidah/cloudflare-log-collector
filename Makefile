@@ -165,10 +165,21 @@ publish-deb: ## Publish .deb packages to Aptly repository
 WEB_IMAGE  := $(REGISTRY)/cloudflare-log-collector-web
 WEB_TAG    ?= $(VERSION)
 
-web-serve: ## Serve the project website locally
+GODOC_PKGS := cloudflare collector config lifecycle loki metrics telemetry
+
+web-godoc: ## Generate Go API reference markdown for the website
+	@mkdir -p web/content/godoc
+	@for pkg in $(GODOC_PKGS); do \
+		echo "  godoc: internal/$$pkg"; \
+		printf -- '---\ntitle: "%s"\n---\n\n' "$$pkg" > web/content/godoc/$$pkg.md; \
+		gomarkdoc ./internal/$$pkg >> web/content/godoc/$$pkg.md; \
+		sed -i '/^# '"$$pkg"'$$/d' web/content/godoc/$$pkg.md; \
+	done
+
+web-serve: web-godoc ## Serve the project website locally
 	cd web && hugo serve
 
-web-build: ## Build the project website
+web-build: web-godoc ## Build the project website
 	cd web && hugo --minify
 
 web-docker: ## Build website Docker image for local architecture
@@ -192,5 +203,5 @@ clean: ## Remove build artifacts
 	rm -f cloudflare-log-collector
 	docker rmi $(FULL_TAG) 2>/dev/null || true
 
-.PHONY: help builder build docker push test vet lint govulncheck run docs changelog release release-local prep-changelog deb publish-deb web-serve web-build web-docker web-push clean
+.PHONY: help builder build docker push test vet lint govulncheck run docs changelog release release-local prep-changelog deb publish-deb web-godoc web-serve web-build web-docker web-push clean
 .DEFAULT_GOAL := help

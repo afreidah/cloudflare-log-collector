@@ -22,6 +22,7 @@ description: "Cloudflare analytics collector for self-hosted observability stack
 
 {{% button href="docs/readme/" style="primary" icon="fas fa-book" %}}README{{% /button %}}
 {{% button href="docs/architecture/" style="primary" icon="fas fa-project-diagram" %}}Architecture{{% /button %}}
+{{% button href="godoc/" style="primary" icon="fas fa-code" %}}Go API{{% /button %}}
 {{% button href="docs/grafana/" style="primary" icon="fas fa-chart-area" %}}Grafana{{% /button %}}
 {{% button href="https://github.com/afreidah/cloudflare-log-collector" style="primary" icon="fab fa-github" %}}GitHub{{% /button %}}
 
