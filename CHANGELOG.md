@@ -3,6 +3,21 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.15] - 2026-03-16
+
+### Added
+- Add Go API reference to documentation site (#24)
+- Add auto-generated Go API reference to documentation site
+- Add Debian packaging, GoReleaser, and Aptly publishing (#22)
+- Add Debian packaging, GoReleaser, Aptly publishing, and boost test coverage
+
+### Fixed
+- Fix import grouping and boost test coverage (#20)
+- Fix import grouping and boost test coverage to 65%
+
+### Improved
+- update CHANGELOG.md for v0.1.12 (#19)
+
 ## [0.1.12] - 2026-03-16
 
 ### Fixed
