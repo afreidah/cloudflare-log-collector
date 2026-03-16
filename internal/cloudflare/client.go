@@ -263,7 +263,9 @@ func (c *Client) QueryHTTPRequests(ctx context.Context, zoneID string, since, un
 
 // doQuery sends a GraphQL request and returns the data field from the response.
 func (c *Client) doQuery(ctx context.Context, zoneID, query string, variables map[string]any) (json.RawMessage, error) {
-	ctx, span := telemetry.StartSpan(ctx, "cloudflare.graphql",
+	ctx, span := telemetry.StartClientSpan(ctx, "cloudflare.graphql",
+		attribute.String("peer.service", "cloudflare-api"),
+		attribute.String("server.address", "api.cloudflare.com"),
 		attribute.String("cflog.zone_id", zoneID),
 		attribute.String("cflog.since", fmt.Sprint(variables["since"])),
 		attribute.String("cflog.until", fmt.Sprint(variables["until"])),

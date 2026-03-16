@@ -85,7 +85,9 @@ func (c *Client) Push(ctx context.Context, labels map[string]string, entries []E
 		return nil
 	}
 
-	ctx, span := telemetry.StartSpan(ctx, "loki.push",
+	ctx, span := telemetry.StartClientSpan(ctx, "loki.push",
+		attribute.String("peer.service", "loki"),
+		attribute.String("server.address", c.endpoint),
 		attribute.Int("loki.entry_count", len(entries)),
 	)
 	defer span.End()
