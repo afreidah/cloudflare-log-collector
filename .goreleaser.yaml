@@ -1,0 +1,97 @@
+# -------------------------------------------------------------------------------
+# GoReleaser Configuration - Release Automation
+#
+# Project: Munchbox / Author: Alex Freidah
+#
+# Builds multi-arch binaries, Debian packages, and GitHub Releases.
+# Triggered by version tag pushes (v*) via GitHub Actions.
+# -------------------------------------------------------------------------------
+
+version: 2
+
+builds:
+  - main: ./cmd/cloudflare-log-collector
+    binary: cloudflare-log-collector
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/afreidah/cloudflare-log-collector/internal/telemetry.Version={{.Version}}
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+nfpms:
+  - id: deb
+    package_name: cloudflare-log-collector
+    vendor: Munchbox
+    homepage: https://github.com/afreidah/cloudflare-log-collector
+    maintainer: Alex Freidah <alex.freidah@gmail.com>
+    description: |
+      Cloudflare analytics collector for self-hosted observability stacks.
+      Polls the GraphQL API for firewall events and HTTP traffic stats,
+      ships them to Loki and Prometheus with OpenTelemetry tracing.
+    section: admin
+    priority: optional
+    formats:
+      - deb
+    dependencies:
+      - systemd
+    contents:
+      - src: ./packaging/cloudflare-log-collector.service
+        dst: /usr/lib/systemd/system/cloudflare-log-collector.service
+        file_info:
+          mode: 0644
+
+      - dst: /etc/cloudflare-log-collector
+        type: dir
+        file_info:
+          mode: 0750
+
+      - src: ./packaging/config.example.yaml
+        dst: /etc/cloudflare-log-collector/config.example.yaml
+        type: config
+        file_info:
+          mode: 0640
+
+      - src: ./packaging/copyright
+        dst: /usr/share/doc/cloudflare-log-collector/copyright
+        file_info:
+          mode: 0644
+
+      - src: ./packaging/changelog.gz
+        dst: /usr/share/doc/cloudflare-log-collector/changelog.Debian.gz
+        file_info:
+          mode: 0644
+
+    scripts:
+      postinstall: ./packaging/postinst
+      preremove: ./packaging/prerm
+      postremove: ./packaging/postrm
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))?\!?:.+$'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^.*?fix(\(.+\))?\!?:.+$'
+      order: 1
+    - title: Other
+      order: 999
+
+release:
+  github:
+    owner: afreidah
+    name: cloudflare-log-collector

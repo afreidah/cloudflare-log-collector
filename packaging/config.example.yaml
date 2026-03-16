@@ -1,0 +1,33 @@
+# -------------------------------------------------------------------------------
+# Cloudflare Log Collector - Example Configuration
+#
+# Project: Munchbox / Author: Alex Freidah
+#
+# Copy to /etc/cloudflare-log-collector/config.yaml and fill in credentials.
+# -------------------------------------------------------------------------------
+
+cloudflare:
+  api_token: "${CF_API_TOKEN}"
+  zones:
+    - id: "${CF_ZONE_ID}"
+      name: "example.com"
+  poll_interval: 5m
+  backfill_window: 1h
+
+loki:
+  endpoint: "http://loki:3100"
+  tenant_id: "fake"
+  batch_size: 100
+
+metrics:
+  listen: ":9101"
+
+tracing:
+  enabled: true
+  endpoint: "tempo:4317"
+  sample_rate: 1.0
+  insecure: true
+
+logging:
+  level: "info"
+  format: "json"
