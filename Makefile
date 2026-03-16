@@ -90,6 +90,9 @@ govulncheck: ## Run Go vulnerability scanner
 run: ## Run locally (requires config.yaml)
 	go run ./cmd/cloudflare-log-collector -config config.yaml
 
+docs: ## Serve godoc locally at http://localhost:8080
+	go run golang.org/x/pkgsite/cmd/pkgsite@latest -http=localhost:8080
+
 # -------------------------------------------------------------------------
 # CHANGELOG
 # -------------------------------------------------------------------------
@@ -104,6 +107,56 @@ changelog: ## Generate CHANGELOG.md from git history
 release: ## Tag and push to trigger a GitHub Release (reads .version)
 	git tag $(VERSION)
 	git push origin $(VERSION)
+
+release-local: prep-changelog ## Dry-run GoReleaser locally (no publish)
+	goreleaser release --snapshot --clean
+
+# -------------------------------------------------------------------------
+# DEBIAN PACKAGING
+# -------------------------------------------------------------------------
+
+prep-changelog: ## Compress changelog for Debian packaging
+	@gzip -9 -n -c packaging/changelog > packaging/changelog.gz
+
+deb: prep-changelog ## Build .deb packages via GoReleaser snapshot
+	goreleaser release --snapshot --clean --skip=publish
+
+# -------------------------------------------------------------------------
+# APTLY PUBLISHING
+# -------------------------------------------------------------------------
+
+APTLY_URL  ?= https://apt.munchbox.cc
+APTLY_REPO ?= munchbox
+APTLY_USER ?= admin
+DEB_DIR    ?= dist
+SNAPSHOT_NAME ?= $(IMAGE)-$(shell date +%Y%m%d-%H%M%S)
+
+publish-deb: ## Publish .deb packages to Aptly repository
+	@if [ -z "$(APTLY_PASS)" ]; then echo "Error: APTLY_PASS not set (source munchbox-env.sh)"; exit 1; fi
+	@echo "Publishing packages to $(APTLY_URL)..."
+	@for deb in $(DEB_DIR)/*.deb; do \
+		echo "Uploading $$(basename $$deb)..."; \
+		curl -fsS -u "$(APTLY_USER):$(APTLY_PASS)" \
+			-X POST -F "file=@$$deb" \
+			"$(APTLY_URL)/api/files/$(IMAGE)" || exit 1; \
+	done
+	@echo "Adding packages to repo $(APTLY_REPO)..."
+	@curl -fsS -u "$(APTLY_USER):$(APTLY_PASS)" \
+		-X POST "$(APTLY_URL)/api/repos/$(APTLY_REPO)/file/$(IMAGE)" || exit 1
+	@echo "Creating snapshot $(SNAPSHOT_NAME)..."
+	@curl -fsS -u "$(APTLY_USER):$(APTLY_PASS)" \
+		-X POST -H 'Content-Type: application/json' \
+		-d '{"Name":"$(SNAPSHOT_NAME)"}' \
+		"$(APTLY_URL)/api/repos/$(APTLY_REPO)/snapshots" || exit 1
+	@echo "Updating published repo..."
+	@curl -fsS -u "$(APTLY_USER):$(APTLY_PASS)" \
+		-X PUT -H 'Content-Type: application/json' \
+		-d '{"Snapshots":[{"Component":"main","Name":"$(SNAPSHOT_NAME)"}],"ForceOverwrite":true}' \
+		'$(APTLY_URL)/api/publish/:./stable' || exit 1
+	@echo "Cleaning up uploaded files..."
+	@curl -fsS -u "$(APTLY_USER):$(APTLY_PASS)" \
+		-X DELETE "$(APTLY_URL)/api/files/$(IMAGE)" || true
+	@echo "Published successfully!"
 
 # -------------------------------------------------------------------------
 # WEBSITE
@@ -139,5 +192,5 @@ clean: ## Remove build artifacts
 	rm -f cloudflare-log-collector
 	docker rmi $(FULL_TAG) 2>/dev/null || true
 
-.PHONY: help builder build docker push test vet lint govulncheck run changelog release web-serve web-build web-docker web-push clean
+.PHONY: help builder build docker push test vet lint govulncheck run docs changelog release release-local prep-changelog deb publish-deb web-serve web-build web-docker web-push clean
 .DEFAULT_GOAL := help

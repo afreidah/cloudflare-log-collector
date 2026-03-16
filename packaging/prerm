@@ -1,0 +1,10 @@
+#!/bin/sh
+# -------------------------------------------------------------------------------
+# Pre-remove script for cloudflare-log-collector
+# -------------------------------------------------------------------------------
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl stop cloudflare-log-collector >/dev/null 2>&1 || true
+    systemctl disable cloudflare-log-collector >/dev/null 2>&1 || true
+fi

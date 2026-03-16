@@ -256,6 +256,68 @@ func TestDoQuery_RequestBody(t *testing.T) {
 }
 
 // -------------------------------------------------------------------------
+// TRUNCATION WARNINGS
+// -------------------------------------------------------------------------
+
+func TestQueryHTTPRequests_TruncationWarning(t *testing.T) {
+	// Build a response with exactly httpQueryLimit groups
+	groups := make([]HTTPRequestGroup, httpQueryLimit)
+	for i := range groups {
+		groups[i] = HTTPRequestGroup{
+			Count: 1,
+			Dimensions: HTTPRequestDimensions{
+				Datetime:                    "2026-03-13T10:00:00Z",
+				ClientRequestHTTPMethodName: "GET",
+				EdgeResponseStatus:          200,
+			},
+		}
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := graphQLResponse{
+			Data: mustMarshal(t, httpRequestResponse{
+				Viewer: struct {
+					Zones []struct {
+						HTTPRequestsAdaptiveGroups []HTTPRequestGroup `json:"httpRequestsAdaptiveGroups"`
+					} `json:"zones"`
+				}{
+					Zones: []struct {
+						HTTPRequestsAdaptiveGroups []HTTPRequestGroup `json:"httpRequestsAdaptiveGroups"`
+					}{
+						{HTTPRequestsAdaptiveGroups: groups},
+					},
+				},
+			}),
+		}
+		writeJSON(t, w, resp)
+	}))
+	t.Cleanup(ts.Close)
+
+	client := NewTestClient(ts.URL, "test-token")
+
+	result, err := client.QueryHTTPRequests(context.Background(), "test-zone",
+		time.Now().Add(-1*time.Hour), time.Now())
+	if err != nil {
+		t.Fatalf("QueryHTTPRequests() error = %v", err)
+	}
+
+	if len(result) != httpQueryLimit {
+		t.Errorf("got %d groups, want %d", len(result), httpQueryLimit)
+	}
+}
+
+func TestNewTestClient(t *testing.T) {
+	client := NewTestClient("http://localhost:9999", "my-token")
+
+	if client.endpoint != "http://localhost:9999" {
+		t.Errorf("endpoint = %q, want %q", client.endpoint, "http://localhost:9999")
+	}
+	if client.apiToken != "my-token" {
+		t.Errorf("apiToken = %q, want %q", client.apiToken, "my-token")
+	}
+}
+
+// -------------------------------------------------------------------------
 // RETRY LOGIC
 // -------------------------------------------------------------------------
 

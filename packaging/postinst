@@ -1,0 +1,13 @@
+#!/bin/sh
+# -------------------------------------------------------------------------------
+# Post-install script for cloudflare-log-collector
+# -------------------------------------------------------------------------------
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+echo "cloudflare-log-collector installed successfully."
+echo "Configure /etc/cloudflare-log-collector/config.yaml then start with:"
+echo "  systemctl enable --now cloudflare-log-collector"

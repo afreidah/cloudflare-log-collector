@@ -174,6 +174,9 @@ make govulncheck            # Go vulnerability scanner
 # --- Release ---
 make changelog              # generate CHANGELOG.md from git history (git-cliff)
 make release                # tag and push to trigger GitHub Release
+make release-local          # dry-run GoReleaser locally (no publish)
+make deb                    # build .deb packages via GoReleaser snapshot
+make publish-deb            # publish .deb packages to Aptly repository
 
 # --- Website ---
 make web-serve              # serve project website locally with live reload
@@ -188,6 +191,7 @@ make clean                  # remove build artifacts
 ## Project Structure
 
 ```
+├── .goreleaser.yaml                  # GoReleaser release configuration
 ├── .version                          # Semantic version tag
 ├── cliff.toml                        # git-cliff changelog generation config
 ├── Dockerfile                        # Multi-stage Alpine build
@@ -226,6 +230,12 @@ make clean                  # remove build artifacts
 │   ├── layouts/                      # Custom templates and shortcodes
 │   ├── assets/css/                   # Custom theme variant
 │   └── themes/hugo-theme-relearn/    # Documentation theme (submodule)
+├── packaging/
+│   ├── cloudflare-log-collector.service  # Systemd unit file
+│   ├── config.example.yaml           # Example configuration
+│   ├── postinst, prerm, postrm       # Debian package scripts
+│   ├── copyright                     # License for Debian packaging
+│   └── changelog                     # Release notes for Debian packaging
 └── docs/
     ├── images/
     │   └── grafana.png               # Grafana dashboard screenshot

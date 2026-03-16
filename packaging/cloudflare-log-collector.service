@@ -1,0 +1,30 @@
+# -------------------------------------------------------------------------------
+# Cloudflare Log Collector Systemd Service
+#
+# Project: Munchbox / Author: Alex Freidah
+#
+# Systemd unit file for cloudflare-log-collector.
+# -------------------------------------------------------------------------------
+
+[Unit]
+Description=Cloudflare Log Collector
+Documentation=https://github.com/afreidah/cloudflare-log-collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/cloudflare-log-collector -config /etc/cloudflare-log-collector/config.yaml
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=true
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

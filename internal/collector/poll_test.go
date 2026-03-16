@@ -72,6 +72,99 @@ func cfHTTPResponse(groups []cloudflare.HTTPRequestGroup) map[string]any {
 }
 
 // -------------------------------------------------------------------------
+// RUN (INITIAL POLL + CANCEL)
+// -------------------------------------------------------------------------
+
+func TestFirewallRun_InitialPollThenCancel(t *testing.T) {
+	events := []cloudflare.FirewallEvent{
+		{Action: "block", Datetime: time.Now().UTC().Format(time.RFC3339)},
+	}
+
+	cfServer := mockCFServer(t, cfFirewallResponse(events))
+	t.Cleanup(cfServer.Close)
+
+	var lokiRequests int
+	lokiServer := mockLokiServer(t, &lokiRequests)
+	t.Cleanup(lokiServer.Close)
+
+	cfg := CollectorConfig{
+		CF:             cloudflare.NewTestClient(cfServer.URL, "test-token"),
+		Loki:           loki.NewClient(lokiServer.URL, "fake"),
+		ZoneID:         "zone1",
+		ZoneName:       "example.com",
+		PollInterval:   time.Hour,
+		BackfillWindow: time.Hour,
+		BatchSize:      100,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- NewFirewallCollector(cfg).Run(ctx)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if lokiRequests != 1 {
+		t.Errorf("got %d Loki requests, want 1 (initial poll)", lokiRequests)
+	}
+}
+
+func TestHTTPRun_InitialPollThenCancel(t *testing.T) {
+	groups := []cloudflare.HTTPRequestGroup{
+		{
+			Count: 10,
+			Dimensions: cloudflare.HTTPRequestDimensions{
+				Datetime:                    time.Now().UTC().Format(time.RFC3339),
+				ClientRequestHTTPMethodName: "GET",
+				EdgeResponseStatus:          200,
+			},
+		},
+	}
+
+	cfServer := mockCFServer(t, cfHTTPResponse(groups))
+	t.Cleanup(cfServer.Close)
+
+	var lokiRequests int
+	lokiServer := mockLokiServer(t, &lokiRequests)
+	t.Cleanup(lokiServer.Close)
+
+	cfg := CollectorConfig{
+		CF:             cloudflare.NewTestClient(cfServer.URL, "test-token"),
+		Loki:           loki.NewClient(lokiServer.URL, "fake"),
+		ZoneID:         "zone1",
+		ZoneName:       "example.com",
+		PollInterval:   time.Hour,
+		BackfillWindow: time.Hour,
+		BatchSize:      100,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- NewHTTPCollector(cfg).Run(ctx)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if lokiRequests != 1 {
+		t.Errorf("got %d Loki requests, want 1 (initial poll)", lokiRequests)
+	}
+}
+
+// -------------------------------------------------------------------------
 // FIREWALL POLL
 // -------------------------------------------------------------------------
 
