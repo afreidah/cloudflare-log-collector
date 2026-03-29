@@ -34,14 +34,27 @@ type Config struct {
 
 // CloudflareConfig holds Cloudflare API connection settings.
 type CloudflareConfig struct {
-	APIToken       string        `yaml:"api_token"`
-	Zones          []ZoneConfig  `yaml:"zones"`
-	PollInterval   time.Duration `yaml:"poll_interval"`
-	BackfillWindow time.Duration `yaml:"backfill_window"`
+	APIToken       string          `yaml:"api_token"`
+	Zones          []ZoneConfig    `yaml:"zones"`
+	AuditLogs      AuditLogsConfig `yaml:"audit_logs"`
+	PollInterval   time.Duration   `yaml:"poll_interval"`
+	BackfillWindow time.Duration   `yaml:"backfill_window"`
 }
 
 // ZoneConfig identifies a single Cloudflare zone to monitor.
 type ZoneConfig struct {
+	ID   string `yaml:"id"`
+	Name string `yaml:"name"`
+}
+
+// AuditLogsConfig holds account audit log collection settings.
+type AuditLogsConfig struct {
+	Enabled  bool            `yaml:"enabled"`
+	Accounts []AccountConfig `yaml:"accounts"`
+}
+
+// AccountConfig identifies a single Cloudflare account to collect audit logs from.
+type AccountConfig struct {
 	ID   string `yaml:"id"`
 	Name string `yaml:"name"`
 }
@@ -112,7 +125,7 @@ func (c *Config) setDefaultsAndValidate() error {
 	if c.Cloudflare.APIToken == "" {
 		errs = append(errs, fmt.Errorf("cloudflare.api_token is required"))
 	}
-	if len(c.Cloudflare.Zones) == 0 {
+	if len(c.Cloudflare.Zones) == 0 && !c.Cloudflare.AuditLogs.Enabled {
 		errs = append(errs, fmt.Errorf("cloudflare.zones requires at least one zone"))
 	}
 	for i, z := range c.Cloudflare.Zones {
@@ -123,6 +136,22 @@ func (c *Config) setDefaultsAndValidate() error {
 			errs = append(errs, fmt.Errorf("cloudflare.zones[%d].name is required", i))
 		}
 	}
+
+	// --- Audit logs validation ---
+	if c.Cloudflare.AuditLogs.Enabled {
+		if len(c.Cloudflare.AuditLogs.Accounts) == 0 {
+			errs = append(errs, fmt.Errorf("cloudflare.audit_logs.accounts requires at least one account when enabled"))
+		}
+		for i, a := range c.Cloudflare.AuditLogs.Accounts {
+			if a.ID == "" {
+				errs = append(errs, fmt.Errorf("cloudflare.audit_logs.accounts[%d].id is required", i))
+			}
+			if a.Name == "" {
+				errs = append(errs, fmt.Errorf("cloudflare.audit_logs.accounts[%d].name is required", i))
+			}
+		}
+	}
+
 	if c.Cloudflare.PollInterval == 0 {
 		c.Cloudflare.PollInterval = 5 * time.Minute
 	}

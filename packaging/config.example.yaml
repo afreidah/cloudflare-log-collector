@@ -11,6 +11,12 @@ cloudflare:
   zones:
     - id: "${CF_ZONE_ID}"
       name: "example.com"
+  # Account audit logs collection (disabled by default)
+  audit_logs:
+    enabled: false
+    accounts:
+      - id: "${CF_ACCOUNT_ID}"
+        name: "my-account"
   poll_interval: 5m
   backfill_window: 1h
 

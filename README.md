@@ -59,6 +59,14 @@ Aggregated HTTP traffic statistics grouped by method, status code, and country. 
 
 Fields captured: `count`, `datetime`, `clientRequestHTTPMethodName`, `edgeResponseStatus`, `clientCountryName`, `edgeResponseBytes`.
 
+### Account Audit Logs
+
+Account-level audit logs capturing administrative actions across your Cloudflare account. Each event becomes a JSON log line in Loki under `{job="cloudflare", type="audit", account="my-account"}`.
+
+Fields captured: `id`, `account` (id, name), `action` (description, result, time, type), `actor` (id, context, email, ip_address, token_id, token_name, type), `raw` (cf_ray_id, method, status_code, uri, user_agent), `resource` (id, product, type), `zone` (id, name).
+
+Audit log collection is disabled by default and requires explicit configuration with account IDs.
+
 ## Prometheus Metrics
 
 Exposed on the configured metrics listen address (default `:9101`).
@@ -69,6 +77,7 @@ Exposed on the configured metrics listen address (default `:9101`).
 | `cflog_poll_duration_seconds` | histogram | `dataset`, `zone` | Poll latency |
 | `cflog_last_poll_timestamp` | gauge | `dataset`, `zone` | Unix timestamp of last successful poll |
 | `cflog_firewall_events_total` | counter | `action`, `zone` | Firewall events by action type |
+| `cflog_audit_events_total` | counter | `action`, `account` | Audit log events by action type |
 | `cflog_http_requests` | gauge | `method`, `status`, `country`, `zone` | HTTP request counts from last poll window |
 | `cflog_http_bytes` | gauge | `type`, `zone` | Edge response bytes from last poll window |
 | `cflog_loki_push_total` | counter | `status` | Loki push attempts by outcome |
@@ -77,12 +86,13 @@ Exposed on the configured metrics listen address (default `:9101`).
 
 ## Loki Streams
 
-Two log streams are pushed to Loki:
+Three log streams are pushed to Loki:
 
 | Stream | Labels | Content |
 |--------|--------|---------|
 | Firewall events | `{job="cloudflare", type="firewall", zone="munchbox.cc"}` | One JSON log line per firewall event |
 | HTTP traffic | `{job="cloudflare", type="http_traffic", zone="munchbox.cc"}` | One JSON log line per traffic group |
+| Audit logs | `{job="cloudflare", type="audit", account="my-account"}` | One JSON log line per audit event |
 
 Both streams include `X-Scope-OrgID` header for multi-tenant Loki deployments (configurable via `tenant_id`).
 
@@ -96,6 +106,11 @@ cloudflare:
   zones:                              # One or more zones to monitor
     - id: "${CF_ZONE_ID}"
       name: "example.com"
+  audit_logs:                         # Account audit log collection (optional)
+    enabled: false                    # Disabled by default
+    accounts:
+      - id: "${CF_ACCOUNT_ID}"
+        name: "my-account"
   poll_interval: 5m                   # How often to poll (default: 5m)
   backfill_window: 1h                 # On startup, fetch this far back (default: 1h)
 
@@ -122,8 +137,9 @@ logging:
 
 The API token requires the following permissions:
 
-- **Account Analytics** — Read
-- **Zone Analytics** — Read
+- **Account Analytics** — Read (for zone analytics)
+- **Zone Analytics** — Read (for zone analytics)
+- **Account Settings** — Read (required for audit logs)
 
 Create one at [Cloudflare Dashboard > API Tokens](https://dash.cloudflare.com/profile/api-tokens).
 
@@ -203,6 +219,8 @@ make clean                  # remove build artifacts
 │   │   ├── client.go                 # GraphQL API client, query builders
 │   │   └── client_test.go
 │   ├── collector/
+│   │   ├── audit.go                  # Audit log poller, Loki shipper
+│   │   ├── audit_test.go
 │   │   ├── firewall.go               # Firewall event poller, Loki shipper
 │   │   ├── firewall_test.go
 │   │   ├── http.go                   # HTTP traffic poller, metrics + Loki
