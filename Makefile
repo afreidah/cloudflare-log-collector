@@ -152,7 +152,7 @@ publish-deb: ## Publish .deb packages to Aptly repository
 	@curl -fsS -u "$(APTLY_USER):$(APTLY_PASS)" \
 		-X PUT -H 'Content-Type: application/json' \
 		-d '{"Snapshots":[{"Component":"main","Name":"$(SNAPSHOT_NAME)"}],"ForceOverwrite":true}' \
-		'$(APTLY_URL)/api/publish/:./stable' || exit 1
+		'$(APTLY_URL)/api/publish/s3:munchbox:./stable' || exit 1
 	@echo "Cleaning up uploaded files..."
 	@curl -fsS -u "$(APTLY_USER):$(APTLY_PASS)" \
 		-X DELETE "$(APTLY_URL)/api/files/$(IMAGE)" || true
