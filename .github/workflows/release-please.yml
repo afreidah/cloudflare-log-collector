@@ -1,0 +1,90 @@
+# -------------------------------------------------------------------------------
+# Release Please Workflow - Automated Release Management
+#
+# Project: Buckham Duffy
+#
+# Creates and maintains a release PR that tracks all changes since the last
+# release. When the release PR is merged, creates a GitHub Release and tag,
+# then runs GoReleaser to build binaries, .deb packages, and Docker images.
+#
+# Uses conventional commits to automatically determine version bumps and
+# generate changelog entries.
+# -------------------------------------------------------------------------------
+
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  packages: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  preflight:
+    runs-on: ubuntu-latest
+    needs: [release-please]
+    if: ${{ needs.release-please.outputs.release_created }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Lint
+        run: make lint
+
+      - name: Unit tests
+        run: go test -race ./...
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [release-please, preflight]
+    if: ${{ needs.release-please.outputs.release_created }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prep Debian changelog
+        run: make prep-changelog
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
