@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 <p align="center">
-  <strong><a href="https://cloudflare-log-collector.munchbox.cc">Project Website</a></strong>
+  <strong><a href="https://cloudflare-log-collector.example.com">Project Website</a></strong>
 </p>
 
 ![Grafana Dashboard](docs/images/grafana.png)
@@ -49,13 +49,13 @@ A lightweight Go service that polls the Cloudflare GraphQL Analytics API for fir
 
 ### Firewall Events (`firewallEventsAdaptive`)
 
-Individual WAF/firewall events with full request detail. Each event becomes a JSON log line in Loki under `{job="cloudflare", type="firewall", zone="munchbox.cc"}`.
+Individual WAF/firewall events with full request detail. Each event becomes a JSON log line in Loki under `{job="cloudflare", type="firewall", zone="example.com"}`.
 
 Fields captured: `action`, `clientIP`, `clientRequestHTTPHost`, `clientRequestHTTPMethodName`, `clientRequestPath`, `clientRequestQuery`, `datetime`, `rayName`, `ruleId`, `source`, `userAgent`, `clientCountryName`.
 
 ### HTTP Traffic (`httpRequestsAdaptiveGroups`)
 
-Aggregated HTTP traffic statistics grouped by method, status code, and country. Pushed to both Prometheus (gauges) and Loki (structured JSON under `{job="cloudflare", type="http_traffic", zone="munchbox.cc"}`).
+Aggregated HTTP traffic statistics grouped by method, status code, and country. Pushed to both Prometheus (gauges) and Loki (structured JSON under `{job="cloudflare", type="http_traffic", zone="example.com"}`).
 
 Fields captured: `count`, `datetime`, `clientRequestHTTPMethodName`, `edgeResponseStatus`, `clientCountryName`, `edgeResponseBytes`.
 
@@ -90,8 +90,8 @@ Three log streams are pushed to Loki:
 
 | Stream | Labels | Content |
 |--------|--------|---------|
-| Firewall events | `{job="cloudflare", type="firewall", zone="munchbox.cc"}` | One JSON log line per firewall event |
-| HTTP traffic | `{job="cloudflare", type="http_traffic", zone="munchbox.cc"}` | One JSON log line per traffic group |
+| Firewall events | `{job="cloudflare", type="firewall", zone="example.com"}` | One JSON log line per firewall event |
+| HTTP traffic | `{job="cloudflare", type="http_traffic", zone="example.com"}` | One JSON log line per traffic group |
 | Audit logs | `{job="cloudflare", type="audit", account="my-account"}` | One JSON log line per audit event |
 
 Both streams include `X-Scope-OrgID` header for multi-tenant Loki deployments (configurable via `tenant_id`).
@@ -158,7 +158,7 @@ Builds and pushes multi-arch images (`linux/amd64`, `linux/arm64`) to the config
 The service deploys as a standard Nomad job with Vault integration for secret injection. The Nomad job template renders the config file with Cloudflare credentials from Vault at `secret/data/cloudflare`.
 
 ```bash
-source munchbox-env.sh && cd nomad && make run JOB=cloudflare-log-collector
+nomad job run cloudflare-log-collector.nomad.hcl
 ```
 
 ### Vault Secret
