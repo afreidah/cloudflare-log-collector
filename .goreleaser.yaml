@@ -4,7 +4,7 @@
 # Project: Munchbox / Author: Alex Freidah
 #
 # Builds multi-arch binaries, Debian packages, and GitHub Releases.
-# Triggered by version tag pushes (v*) via GitHub Actions.
+# Run by the release-please workflow when a release PR is merged.
 # -------------------------------------------------------------------------------
 
 version: 2

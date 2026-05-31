@@ -187,8 +187,8 @@ make lint                   # golangci-lint
 make govulncheck            # Go vulnerability scanner
 
 # --- Release ---
-make changelog              # generate CHANGELOG.md from git history (git-cliff)
-make release                # tag and push to trigger GitHub Release
+# Releases are automated by release-please: merge the release PR it maintains
+# on main to bump the version, update CHANGELOG.md, tag, and run GoReleaser.
 make release-local          # dry-run GoReleaser locally (no publish)
 make deb                    # build .deb packages via GoReleaser snapshot
 make publish-deb            # publish .deb packages to Aptly repository
@@ -207,8 +207,8 @@ make clean                  # remove build artifacts
 
 ```
 ├── .goreleaser.yaml                  # GoReleaser release configuration
-├── .version                          # Semantic version tag
-├── cliff.toml                        # git-cliff changelog generation config
+├── release-please-config.json        # release-please configuration
+├── .release-please-manifest.json     # release-please version manifest
 ├── Dockerfile                        # Multi-stage Alpine build
 ├── Makefile                          # Build, test, push targets
 ├── cmd/
