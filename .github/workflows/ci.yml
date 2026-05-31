@@ -105,12 +105,6 @@ jobs:
       - name: Unit tests
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
-      - name: Upload coverage
-        uses: codecov/codecov-action@v5
-        with:
-          files: coverage.out
-          token: ${{ secrets.CODECOV_TOKEN }}
-
   govulncheck:
     needs: [changes]
     if: needs.changes.outputs.go == 'true'

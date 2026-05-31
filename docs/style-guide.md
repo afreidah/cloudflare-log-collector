@@ -271,7 +271,7 @@ Use `slog.InfoContext(ctx, ...)` instead of `slog.Info(...)` to ensure the trace
 
 ### Coverage Exclusions
 
-Use `.codecov.yml` to exclude untestable code from coverage reports:
+The following packages are excluded from coverage analysis as untestable:
 - `cmd/` - process entry points with `os.Exit`
 - `internal/telemetry/` - OTel wiring, not unit-testable
 - `internal/metrics/` - metric definitions, not unit-testable
