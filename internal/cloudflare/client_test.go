@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -155,6 +156,174 @@ func TestQueryHTTPRequests_Success(t *testing.T) {
 	}
 	if groups[0].Sum.EdgeResponseBytes != 1024 {
 		t.Errorf("edgeResponseBytes = %d, want 1024", groups[0].Sum.EdgeResponseBytes)
+	}
+}
+
+// -------------------------------------------------------------------------
+// AUDIT LOGS
+// -------------------------------------------------------------------------
+
+func TestQueryAuditLogs_Success(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		verifyAuthHeader(t, r)
+
+		// --- Verify request path and query params ---
+		if !contains(r.URL.Path, "/accounts/test-account/logs/audit") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("since") == "" {
+			t.Error("missing since query param")
+		}
+		if r.URL.Query().Get("before") == "" {
+			t.Error("missing before query param")
+		}
+
+		_, _ = w.Write([]byte(`{
+			"success": true,
+			"result": [{
+				"id": "audit-123",
+				"account": {"id": "test-account", "name": "Test Account"},
+				"action": {"description": "Add Member", "result": "success", "time": "2026-03-13T10:00:00Z", "type": "create"},
+				"actor": {"id": "user-456", "context": "dash", "email": "admin@example.com", "ip_address": "1.2.3.4", "type": "user"},
+				"raw": {"cf_ray_id": "ray-789", "method": "POST", "status_code": 200, "uri": "/accounts/test-account/members"},
+				"resource": {"id": "member-abc", "product": "members", "type": "member"}
+			}],
+			"result_info": {"count": 1, "cursor": ""}
+		}`))
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newTestClient(ts.URL, "test-token")
+
+	events, err := client.QueryAuditLogs(context.Background(), "test-account",
+		time.Now().Add(-1*time.Hour), time.Now())
+	if err != nil {
+		t.Fatalf("QueryAuditLogs() error = %v", err)
+	}
+
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+	if events[0].ID != "audit-123" {
+		t.Errorf("id = %q, want %q", events[0].ID, "audit-123")
+	}
+	if events[0].Action.Type != "create" {
+		t.Errorf("action.type = %q, want %q", events[0].Action.Type, "create")
+	}
+	if events[0].Actor.Email != "admin@example.com" {
+		t.Errorf("actor.email = %q, want %q", events[0].Actor.Email, "admin@example.com")
+	}
+	if events[0].AccountID != "test-account" {
+		t.Errorf("account_id = %q, want %q", events[0].AccountID, "test-account")
+	}
+}
+
+func TestQueryAuditLogs_Pagination(t *testing.T) {
+	requestCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		cursor := r.URL.Query().Get("cursor")
+
+		switch cursor {
+		case "":
+			// --- First page ---
+			_, _ = w.Write([]byte(`{
+				"success": true,
+				"result": [
+					{"id": "audit-1", "action": {"type": "create"}},
+					{"id": "audit-2", "action": {"type": "update"}}
+				],
+				"result_info": {"count": 2, "cursor": "next-page-cursor"}
+			}`))
+		case "next-page-cursor":
+			// --- Second page ---
+			_, _ = w.Write([]byte(`{
+				"success": true,
+				"result": [
+					{"id": "audit-3", "action": {"type": "delete"}}
+				],
+				"result_info": {"count": 1, "cursor": ""}
+			}`))
+		}
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newTestClient(ts.URL, "test-token")
+
+	events, err := client.QueryAuditLogs(context.Background(), "test-account",
+		time.Now().Add(-1*time.Hour), time.Now())
+	if err != nil {
+		t.Fatalf("QueryAuditLogs() error = %v", err)
+	}
+
+	if requestCount != 2 {
+		t.Errorf("expected 2 API requests for pagination, got %d", requestCount)
+	}
+	if len(events) != 3 {
+		t.Fatalf("got %d events, want 3", len(events))
+	}
+	if events[0].ID != "audit-1" {
+		t.Errorf("events[0].id = %q, want %q", events[0].ID, "audit-1")
+	}
+	if events[2].ID != "audit-3" {
+		t.Errorf("events[2].id = %q, want %q", events[2].ID, "audit-3")
+	}
+}
+
+func TestQueryAuditLogs_EmptyResult(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"success": true,
+			"result": [],
+			"result_info": {"count": 0, "cursor": ""}
+		}`))
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newTestClient(ts.URL, "test-token")
+
+	events, err := client.QueryAuditLogs(context.Background(), "test-account",
+		time.Now().Add(-1*time.Hour), time.Now())
+	if err != nil {
+		t.Fatalf("QueryAuditLogs() error = %v", err)
+	}
+
+	if len(events) != 0 {
+		t.Errorf("expected empty events, got %d", len(events))
+	}
+}
+
+func TestQueryAuditLogs_APIError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"success": false,
+			"errors": [{"message": "Invalid account ID"}]
+		}`))
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newTestClient(ts.URL, "test-token")
+
+	_, err := client.QueryAuditLogs(context.Background(), "bad-account",
+		time.Now().Add(-1*time.Hour), time.Now())
+	if err == nil {
+		t.Error("expected error for API error response")
+	}
+}
+
+func TestQueryAuditLogs_HTTPError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"forbidden"}]}`))
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newTestClient(ts.URL, "test-token")
+
+	_, err := client.QueryAuditLogs(context.Background(), "test-account",
+		time.Now().Add(-1*time.Hour), time.Now())
+	if err == nil {
+		t.Error("expected error for HTTP 403")
 	}
 }
 
@@ -381,11 +550,7 @@ func TestIsRetryable(t *testing.T) {
 
 // newTestClient creates a Client pointing at the given test server URL.
 func newTestClient(url, token string) *Client {
-	c := NewClient(token)
-	c.httpClient = &http.Client{Timeout: 5 * time.Second}
-	// --- Override the endpoint to point at httptest server ---
-	c.endpoint = url
-	return c
+	return NewTestClient(url, token)
 }
 
 // verifyAuthHeader checks the Authorization header is a Bearer token.
@@ -423,4 +588,9 @@ func mustMarshal(t *testing.T, v any) json.RawMessage {
 		t.Fatalf("json.Marshal: %v", err)
 	}
 	return data
+}
+
+// contains checks if s contains substr.
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
 }

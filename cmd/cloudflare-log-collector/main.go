@@ -92,6 +92,23 @@ func main() {
 		sm.Register(fmt.Sprintf("http-%s", zone.Name), collector.NewHTTPCollector(cc))
 	}
 
+	// --- Register audit log collectors if enabled ---
+	if cfg.Cloudflare.AuditLogs.Enabled {
+		for _, account := range cfg.Cloudflare.AuditLogs.Accounts {
+			ac := collector.AuditCollectorConfig{
+				CF:             cfClient,
+				Loki:           lokiClient,
+				AccountID:      account.ID,
+				AccountName:    account.Name,
+				PollInterval:   cfg.Cloudflare.PollInterval,
+				BackfillWindow: cfg.Cloudflare.BackfillWindow,
+				BatchSize:      cfg.Loki.BatchSize,
+			}
+
+			sm.Register(fmt.Sprintf("audit-%s", account.Name), collector.NewAuditCollector(ac))
+		}
+	}
+
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
 	bgDone := make(chan struct{})
@@ -124,9 +141,19 @@ func main() {
 		zoneNames[i] = z.Name
 	}
 
+	// --- Build account name list for startup log ---
+	var accountNames []string
+	if cfg.Cloudflare.AuditLogs.Enabled {
+		accountNames = make([]string, len(cfg.Cloudflare.AuditLogs.Accounts))
+		for i, a := range cfg.Cloudflare.AuditLogs.Accounts {
+			accountNames[i] = a.Name
+		}
+	}
+
 	slog.Info("Cloudflare Log Collector starting",
 		"version", telemetry.Version,
 		"zones", zoneNames,
+		"audit_accounts", accountNames,
 		"listen", cfg.Metrics.Listen,
 		"poll_interval", cfg.Cloudflare.PollInterval,
 		"backfill_window", cfg.Cloudflare.BackfillWindow,

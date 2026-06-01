@@ -112,7 +112,7 @@ func TestPush_StreamLabels(t *testing.T) {
 	labels := map[string]string{
 		"job":  "cloudflare",
 		"type": "firewall",
-		"zone": "munchbox.cc",
+		"zone": "example.com",
 	}
 
 	err := client.Push(context.Background(), labels,

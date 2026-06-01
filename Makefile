@@ -3,13 +3,16 @@
 #
 # Author: Alex Freidah
 #
-# Go-based Cloudflare analytics collector. Builds multi-arch container images
-# for deployment to the munchbox Nomad cluster.
+# Go-based Cloudflare analytics collector. Builds multi-arch container images.
 # -------------------------------------------------------------------------------
 
-REGISTRY   ?= registry.munchbox.cc
+# Derive the GitHub owner from the origin remote so the image registry defaults
+# to the account the repo lives on (any fork publishes to its own namespace).
+# Override the whole registry with DOCKER_REGISTRY (e.g. a private registry).
+GH_OWNER   ?= $(shell git config --get remote.origin.url 2>/dev/null | sed -E 's#.*[/:]([^/]+)/[^/]+$$#\1#' | tr 'A-Z' 'a-z')
+REGISTRY   ?= $(or $(DOCKER_REGISTRY),ghcr.io/$(GH_OWNER))
 IMAGE      := cloudflare-log-collector
-VERSION    ?= $(shell cat .version)
+VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 FULL_TAG   := $(REGISTRY)/$(IMAGE):$(VERSION)
 CACHE_TAG  := $(REGISTRY)/$(IMAGE):cache
@@ -94,19 +97,12 @@ docs: ## Serve godoc locally at http://localhost:8080
 	go run golang.org/x/pkgsite/cmd/pkgsite@latest -http=localhost:8080
 
 # -------------------------------------------------------------------------
-# CHANGELOG
-# -------------------------------------------------------------------------
-
-changelog: ## Generate CHANGELOG.md from git history
-	git cliff -o CHANGELOG.md
-
-# -------------------------------------------------------------------------
 # RELEASE
 # -------------------------------------------------------------------------
-
-release: ## Tag and push to trigger a GitHub Release (reads .version)
-	git tag $(VERSION)
-	git push origin $(VERSION)
+# Versioning, tagging, CHANGELOG.md, and GitHub Releases are automated by
+# release-please (.github/workflows/release-please.yml). Merging the release PR
+# it maintains cuts the release and runs GoReleaser. Use the target below to
+# dry-run GoReleaser locally.
 
 release-local: prep-changelog ## Dry-run GoReleaser locally (no publish)
 	goreleaser release --snapshot --clean
@@ -125,14 +121,16 @@ deb: prep-changelog ## Build .deb packages via GoReleaser snapshot
 # APTLY PUBLISHING
 # -------------------------------------------------------------------------
 
-APTLY_URL  ?= https://apt.munchbox.cc
-APTLY_REPO ?= munchbox
-APTLY_USER ?= admin
-DEB_DIR    ?= dist
+APTLY_URL     ?= $(or $(APTLY_ENDPOINT),https://apt.example.com)
+APTLY_REPO    ?= $(or $(APTLY_REPOSITORY),stable)
+APTLY_USER    ?= admin
+APTLY_PREFIX  ?= $(or $(APTLY_PUBLISH_PREFIX),.)
+APTLY_DIST    ?= stable
+DEB_DIR       ?= dist
 SNAPSHOT_NAME ?= $(IMAGE)-$(shell date +%Y%m%d-%H%M%S)
 
 publish-deb: ## Publish .deb packages to Aptly repository
-	@if [ -z "$(APTLY_PASS)" ]; then echo "Error: APTLY_PASS not set (source munchbox-env.sh)"; exit 1; fi
+	@if [ -z "$(APTLY_PASS)" ]; then echo "Error: APTLY_PASS not set"; exit 1; fi
 	@echo "Publishing packages to $(APTLY_URL)..."
 	@for deb in $(DEB_DIR)/*.deb; do \
 		echo "Uploading $$(basename $$deb)..."; \
@@ -152,7 +150,7 @@ publish-deb: ## Publish .deb packages to Aptly repository
 	@curl -fsS -u "$(APTLY_USER):$(APTLY_PASS)" \
 		-X PUT -H 'Content-Type: application/json' \
 		-d '{"Snapshots":[{"Component":"main","Name":"$(SNAPSHOT_NAME)"}],"ForceOverwrite":true}' \
-		'$(APTLY_URL)/api/publish/s3:munchbox:./stable' || exit 1
+		'$(APTLY_URL)/api/publish/$(APTLY_PREFIX)/$(APTLY_DIST)' || exit 1
 	@echo "Cleaning up uploaded files..."
 	@curl -fsS -u "$(APTLY_USER):$(APTLY_PASS)" \
 		-X DELETE "$(APTLY_URL)/api/files/$(IMAGE)" || true
@@ -203,5 +201,5 @@ clean: ## Remove build artifacts
 	rm -f cloudflare-log-collector
 	docker rmi $(FULL_TAG) 2>/dev/null || true
 
-.PHONY: help builder build docker push test vet lint govulncheck run docs changelog release release-local prep-changelog deb publish-deb web-godoc web-serve web-build web-docker web-push clean
+.PHONY: help builder build docker push test vet lint govulncheck run docs release-local prep-changelog deb publish-deb web-godoc web-serve web-build web-docker web-push clean
 .DEFAULT_GOAL := help

@@ -59,6 +59,12 @@ var HTTPBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Help: "HTTP bytes by type from last poll window",
 }, []string{"type", "zone"})
 
+// AuditEventsTotal counts audit log events by action type and account.
+var AuditEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "cflog_audit_events_total",
+	Help: "Cloudflare audit log events by action type",
+}, []string{"action", "account"})
+
 // -------------------------------------------------------------------------
 // LOKI METRICS
 // -------------------------------------------------------------------------

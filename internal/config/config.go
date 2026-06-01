@@ -34,14 +34,27 @@ type Config struct {
 
 // CloudflareConfig holds Cloudflare API connection settings.
 type CloudflareConfig struct {
-	APIToken       string        `yaml:"api_token"`
-	Zones          []ZoneConfig  `yaml:"zones"`
-	PollInterval   time.Duration `yaml:"poll_interval"`
-	BackfillWindow time.Duration `yaml:"backfill_window"`
+	APIToken       string          `yaml:"api_token"`
+	Zones          []ZoneConfig    `yaml:"zones"`
+	AuditLogs      AuditLogsConfig `yaml:"audit_logs"`
+	PollInterval   time.Duration   `yaml:"poll_interval"`
+	BackfillWindow time.Duration   `yaml:"backfill_window"`
 }
 
 // ZoneConfig identifies a single Cloudflare zone to monitor.
 type ZoneConfig struct {
+	ID   string `yaml:"id"`
+	Name string `yaml:"name"`
+}
+
+// AuditLogsConfig holds account audit log collection settings.
+type AuditLogsConfig struct {
+	Enabled  bool            `yaml:"enabled"`
+	Accounts []AccountConfig `yaml:"accounts"`
+}
+
+// AccountConfig identifies a single Cloudflare account to collect audit logs from.
+type AccountConfig struct {
 	ID   string `yaml:"id"`
 	Name string `yaml:"name"`
 }
@@ -103,16 +116,57 @@ func LoadConfig(path string) (*Config, error) {
 // VALIDATION
 // -------------------------------------------------------------------------
 
-// setDefaultsAndValidate applies default values for optional fields and checks
+// setDefaultsAndValidate fills in defaults for optional fields, then checks
 // that all required configuration values are present.
 func (c *Config) setDefaultsAndValidate() error {
-	var errs []error
+	c.applyDefaults()
+	return c.validate()
+}
 
-	// --- Cloudflare defaults and validation ---
+// applyDefaults fills in default values for optional fields left unset.
+func (c *Config) applyDefaults() {
+	if c.Cloudflare.PollInterval == 0 {
+		c.Cloudflare.PollInterval = 5 * time.Minute
+	}
+	if c.Cloudflare.BackfillWindow == 0 {
+		c.Cloudflare.BackfillWindow = 1 * time.Hour
+	}
+	if c.Loki.TenantID == "" {
+		c.Loki.TenantID = "fake"
+	}
+	if c.Loki.BatchSize == 0 {
+		c.Loki.BatchSize = 100
+	}
+	if c.Metrics.Listen == "" {
+		c.Metrics.Listen = ":9101"
+	}
+	if c.Logging.Level == "" {
+		c.Logging.Level = "info"
+	}
+	if c.Logging.Format == "" {
+		c.Logging.Format = "json"
+	}
+}
+
+// validate checks that all required configuration values are present, gathering
+// errors per config section.
+func (c *Config) validate() error {
+	var errs []error
+	errs = append(errs, c.validateCloudflare()...)
+	errs = append(errs, c.validateAuditLogs()...)
+	if c.Loki.Endpoint == "" {
+		errs = append(errs, fmt.Errorf("loki.endpoint is required"))
+	}
+	return errors.Join(errs...)
+}
+
+// validateCloudflare checks the required Cloudflare fields and per-zone values.
+func (c *Config) validateCloudflare() []error {
+	var errs []error
 	if c.Cloudflare.APIToken == "" {
 		errs = append(errs, fmt.Errorf("cloudflare.api_token is required"))
 	}
-	if len(c.Cloudflare.Zones) == 0 {
+	if len(c.Cloudflare.Zones) == 0 && !c.Cloudflare.AuditLogs.Enabled {
 		errs = append(errs, fmt.Errorf("cloudflare.zones requires at least one zone"))
 	}
 	for i, z := range c.Cloudflare.Zones {
@@ -123,38 +177,27 @@ func (c *Config) setDefaultsAndValidate() error {
 			errs = append(errs, fmt.Errorf("cloudflare.zones[%d].name is required", i))
 		}
 	}
-	if c.Cloudflare.PollInterval == 0 {
-		c.Cloudflare.PollInterval = 5 * time.Minute
-	}
-	if c.Cloudflare.BackfillWindow == 0 {
-		c.Cloudflare.BackfillWindow = 1 * time.Hour
-	}
+	return errs
+}
 
-	// --- Loki defaults and validation ---
-	if c.Loki.Endpoint == "" {
-		errs = append(errs, fmt.Errorf("loki.endpoint is required"))
+// validateAuditLogs checks the audit-log accounts when collection is enabled.
+func (c *Config) validateAuditLogs() []error {
+	if !c.Cloudflare.AuditLogs.Enabled {
+		return nil
 	}
-	if c.Loki.TenantID == "" {
-		c.Loki.TenantID = "fake"
+	var errs []error
+	if len(c.Cloudflare.AuditLogs.Accounts) == 0 {
+		errs = append(errs, fmt.Errorf("cloudflare.audit_logs.accounts requires at least one account when enabled"))
 	}
-	if c.Loki.BatchSize == 0 {
-		c.Loki.BatchSize = 100
+	for i, a := range c.Cloudflare.AuditLogs.Accounts {
+		if a.ID == "" {
+			errs = append(errs, fmt.Errorf("cloudflare.audit_logs.accounts[%d].id is required", i))
+		}
+		if a.Name == "" {
+			errs = append(errs, fmt.Errorf("cloudflare.audit_logs.accounts[%d].name is required", i))
+		}
 	}
-
-	// --- Metrics defaults ---
-	if c.Metrics.Listen == "" {
-		c.Metrics.Listen = ":9101"
-	}
-
-	// --- Logging defaults ---
-	if c.Logging.Level == "" {
-		c.Logging.Level = "info"
-	}
-	if c.Logging.Format == "" {
-		c.Logging.Format = "json"
-	}
-
-	return errors.Join(errs...)
+	return errs
 }
 
 // ParseLogLevel maps a config string to an slog.Level.
