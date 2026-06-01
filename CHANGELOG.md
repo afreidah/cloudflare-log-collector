@@ -3,6 +3,19 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.16](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.15...v0.1.16) (2026-06-01)
+
+
+### Features
+
+* account audit logs + release-please (adapted from [#33](https://github.com/afreidah/cloudflare-log-collector/issues/33)) ([#35](https://github.com/afreidah/cloudflare-log-collector/issues/35)) ([b26114b](https://github.com/afreidah/cloudflare-log-collector/commit/b26114ba4c9e9a97dde25a40f94c74d6499efb9d))
+* add account audit logs ingest ([d0f10f1](https://github.com/afreidah/cloudflare-log-collector/commit/d0f10f195b90d84998971ad078600160ee4b1992))
+
+
+### Bug Fixes
+
+* **deps:** clear govulncheck findings ([a17b7c4](https://github.com/afreidah/cloudflare-log-collector/commit/a17b7c49cda0edf69d87200fe074068fb956bc00))
+
 ## [0.1.15] - 2026-03-16
 
 ### Added
