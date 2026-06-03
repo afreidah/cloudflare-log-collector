@@ -1,7 +1,7 @@
 # -------------------------------------------------------------------------------
 # Cloudflare Log Collector - Example Configuration
 #
-# Project: Munchbox / Author: Alex Freidah
+# Project: Munchbox / Authors: Alex Freidah, Aaron Florey
 #
 # Copy to /etc/cloudflare-log-collector/config.yaml and fill in credentials.
 # -------------------------------------------------------------------------------

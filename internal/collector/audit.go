@@ -1,7 +1,7 @@
 // -------------------------------------------------------------------------------
 // Audit Log Collector
 //
-// Author: Alex Freidah
+// Author: Aaron Florey
 //
 // Polls the Cloudflare Account Audit Logs REST API on a configurable interval
 // and ships events to Loki as structured JSON log lines. Tracks the last-seen

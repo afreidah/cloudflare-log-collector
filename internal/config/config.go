@@ -1,7 +1,7 @@
 // -------------------------------------------------------------------------------
 // Configuration - Cloudflare Log Collector Settings
 //
-// Author: Alex Freidah
+// Authors: Alex Freidah, Aaron Florey
 //
 // YAML configuration loader with environment variable expansion using ${VAR}
 // syntax. Validates required fields and applies defaults for optional settings.

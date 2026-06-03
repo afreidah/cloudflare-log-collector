@@ -1,7 +1,7 @@
 // -------------------------------------------------------------------------------
 // Cloudflare Log Collector - Entry Point
 //
-// Author: Alex Freidah
+// Authors: Alex Freidah, Aaron Florey
 //
 // Polls the Cloudflare GraphQL Analytics API for firewall events and HTTP
 // traffic statistics. Ships firewall events to Loki as structured JSON logs

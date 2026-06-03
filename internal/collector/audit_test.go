@@ -1,7 +1,7 @@
 // -------------------------------------------------------------------------------
 // Audit Log Collector Tests
 //
-// Author: Alex Freidah
+// Author: Aaron Florey
 //
 // Tests for the audit collector's Loki shipping logic. Verifies JSON
 // serialization of audit events, batch splitting, stream label assignment,

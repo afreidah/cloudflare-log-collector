@@ -1,7 +1,7 @@
 // -------------------------------------------------------------------------------
 // Cloudflare GraphQL Client Tests
 //
-// Author: Alex Freidah
+// Authors: Alex Freidah, Aaron Florey
 //
 // Tests for the Cloudflare GraphQL API client using httptest servers to mock
 // API responses. Covers successful queries, error handling, and response parsing

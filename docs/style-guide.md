@@ -1,4 +1,4 @@
-**Author:** Alex Freidah
+# Style Guide
 
 ---
 
@@ -37,7 +37,7 @@
 // -------------------------------------------------------------------------------
 // Title of File or Component
 //
-// Author: Alex Freidah
+// Author: <creator>   (or "Authors: <a>, <b>" when more than one has contributed)
 //
 // 2-4 sentence description of the file's purpose, scope, and key functionality.
 // Include architecture notes, design decisions, or important context that helps
@@ -127,7 +127,7 @@ Every `.go` file starts with a 79-char header block:
 // -------------------------------------------------------------------------------
 // Cloudflare GraphQL Client
 //
-// Author: Alex Freidah
+// Authors: <author>, <contributor>
 //
 // HTTP client for the Cloudflare GraphQL Analytics API. Queries firewall events
 // and HTTP traffic statistics. Handles response parsing and seek-based
@@ -142,6 +142,10 @@ package cloudflare
 - Title line describes the file's scope, not the package
 - Description covers purpose, key behaviors, and dependencies
 - The `package` declaration follows immediately after the closing divider + blank line
+- **Author line** — the creator of a new file is its `Author:`. When you make a
+  substantive change to an existing file, append your name: `Authors: <prior>, <you>`.
+  Trivial touches (dependency bumps, formatting, mechanical renames) don't earn a
+  credit; git history is the authoritative record.
 
 ---
 
@@ -343,7 +347,7 @@ For branches without a linked issue, use a short kebab-case description of the t
 // -------------------------------------------------------------------------------
 // HTTP Traffic Collector
 //
-// Author: Alex Freidah
+// Author: <author>
 //
 // Polls the Cloudflare httpRequestsAdaptiveGroups dataset on a configurable
 // interval. Updates Prometheus gauges with aggregated traffic statistics and
