@@ -12,6 +12,13 @@ Contributions are welcome. A few notes to keep things smooth.
   `make test`, and `make govulncheck`.
 - CI runs lint, tests, and `govulncheck` on every PR.
 
+## Attribution
+
+Credit yourself in the file header, per [`docs/style-guide.md`](docs/style-guide.md):
+you are the `Author:` of files you create, and when you make a substantive change
+to an existing file you append your name to the `Authors:` line. Git history is
+the authoritative record.
+
 ## Forking
 
 Most account-specific values are derived automatically, so a fork needs little

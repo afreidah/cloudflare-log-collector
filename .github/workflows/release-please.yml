@@ -1,7 +1,7 @@
 # -------------------------------------------------------------------------------
 # Release Please Workflow - Automated Release Management
 #
-# Author: Alex Freidah
+# Authors: Alex Freidah, Aaron Florey
 #
 # Maintains a release PR that tracks all conventional-commit changes since the
 # last release. Merging the release PR bumps the version, regenerates

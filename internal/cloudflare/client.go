@@ -1,7 +1,7 @@
 // -------------------------------------------------------------------------------
 // Cloudflare GraphQL Client
 //
-// Author: Alex Freidah
+// Authors: Alex Freidah, Aaron Florey
 //
 // HTTP client for the Cloudflare GraphQL Analytics API. Queries firewall events
 // and HTTP traffic statistics. Handles rate limiting, response parsing, and

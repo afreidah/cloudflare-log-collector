@@ -1,7 +1,7 @@
 // -------------------------------------------------------------------------------
 // Prometheus Metrics - Cloudflare Log Collector
 //
-// Author: Alex Freidah
+// Authors: Alex Freidah, Aaron Florey
 //
 // Defines all Prometheus metrics for the collector. Uses promauto for automatic
 // registration. Tracks poll operations, Loki pushes, and Cloudflare event counts.
