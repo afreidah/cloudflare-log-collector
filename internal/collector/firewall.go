@@ -147,8 +147,11 @@ func (c *FirewallCollector) poll(ctx context.Context) {
 
 	// --- Advance cursor to the last event's timestamp ---
 	lastEvent := events[len(events)-1]
-	if t, err := time.Parse(time.RFC3339Nano, lastEvent.Datetime); err == nil {
+	if t, ok := parseEventTime(lastEvent.Datetime); ok {
 		c.lastSeen = t
+	} else {
+		slog.WarnContext(ctx, "Unparseable firewall event timestamp, cursor not advanced",
+			"zone", c.zoneName, "datetime", lastEvent.Datetime)
 	}
 }
 

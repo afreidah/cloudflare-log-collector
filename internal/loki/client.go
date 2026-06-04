@@ -5,7 +5,8 @@
 //
 // HTTP client for the Loki push API (POST /loki/api/v1/push). Batches log
 // entries and sends them as JSON streams with configurable labels and tenant ID.
-// Used to ship Cloudflare firewall events into the cluster's Loki instance.
+// Used to ship Cloudflare firewall events, HTTP traffic, and audit logs into the
+// cluster's Loki instance.
 // -------------------------------------------------------------------------------
 
 package loki

@@ -121,14 +121,14 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "time() - cflog_last_poll_timestamp{zone=~\"$zone\"}",
-          "legendFormat": "{{dataset}} ({{zone}})"
+          "expr": "time() - max(cflog_last_poll_timestamp{zone=~\"$zone\"})",
+          "legendFormat": "since last poll"
         }
       ],
       "options": {
         "colorMode": "value",
         "graphMode": "none",
-        "textMode": "value_and_name",
+        "textMode": "value",
         "reduceOptions": { "calcs": ["lastNotNull"] }
       },
       "fieldConfig": {
@@ -634,9 +634,126 @@
     },
     {
       "type": "row",
+      "id": 30,
+      "title": "Audit Logs (from Cloudflare)",
+      "gridPos": { "x": 0, "y": 37, "w": 24, "h": 1 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "id": 31,
+      "title": "Audit Actions Over Time",
+      "description": "Account audit log actions over time, by action type",
+      "gridPos": { "x": 0, "y": 38, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (action) (rate(cflog_audit_events_total{account=~\"$account\"}[5m]))",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "stacking": { "mode": "normal" }
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "id": 32,
+      "title": "Total Audit Events",
+      "description": "All-time audit events since last restart",
+      "gridPos": { "x": 12, "y": 38, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (account) (cflog_audit_events_total{account=~\"$account\"})",
+          "legendFormat": "{{account}}"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "purple", "value": null }]
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "id": 33,
+      "title": "Audit Actions Breakdown",
+      "description": "Audit events grouped by action type",
+      "gridPos": { "x": 18, "y": 38, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (action) (cflog_audit_events_total{account=~\"$account\"})",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "semi-dark-purple", "value": null }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "logs",
+      "id": 34,
+      "title": "Recent Audit Events (from Loki)",
+      "description": "Individual account audit events as shipped to Loki by the collector",
+      "gridPos": { "x": 12, "y": 42, "w": 12, "h": 4 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "expr": "{job=\"cloudflare\", type=\"audit\", account=~\"$account\"} | json",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": false,
+        "prettifyLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "type": "row",
       "id": 40,
       "title": "Collector Logs",
-      "gridPos": { "x": 0, "y": 37, "w": 24, "h": 1 },
+      "gridPos": { "x": 0, "y": 46, "w": 24, "h": 1 },
       "collapsed": false
     },
     {
@@ -644,7 +761,7 @@
       "id": 41,
       "title": "Service Logs (collector process)",
       "description": "Stdout from the collector itself — poll results, errors, startup info. Click trace IDs to jump to Tempo.",
-      "gridPos": { "x": 0, "y": 38, "w": 24, "h": 10 },
+      "gridPos": { "x": 0, "y": 47, "w": 24, "h": 10 },
       "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
@@ -668,7 +785,7 @@
       "id": 42,
       "title": "HTTP Traffic Logs (raw Cloudflare data in Loki)",
       "description": "The raw HTTP traffic data points that the collector shipped to Loki from Cloudflare analytics",
-      "gridPos": { "x": 0, "y": 48, "w": 24, "h": 8 },
+      "gridPos": { "x": 0, "y": 57, "w": 24, "h": 8 },
       "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
@@ -696,6 +813,19 @@
         "type": "query",
         "datasource": { "type": "prometheus", "uid": "prometheus" },
         "query": "label_values(cflog_poll_total, zone)",
+        "includeAll": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "multi": true,
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "account",
+        "label": "Account",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(cflog_audit_events_total, account)",
         "includeAll": true,
         "allValue": ".*",
         "current": { "text": "All", "value": "$__all" },

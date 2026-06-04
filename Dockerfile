@@ -3,11 +3,12 @@
 #
 # Author: Alex Freidah
 #
-# Multi-stage Alpine build. Polls Cloudflare GraphQL API for firewall events
-# and HTTP traffic, ships to Loki and Prometheus.
+# Multi-stage Alpine build. Polls the Cloudflare GraphQL API for firewall events
+# and HTTP traffic and the REST Audit Logs API for account audit events, shipping
+# to Loki and Prometheus.
 # -------------------------------------------------------------------------------
 
-FROM --platform=$BUILDPLATFORM golang:1.26.1-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.4-alpine AS builder
 
 ARG VERSION=dev
 ARG TARGETOS

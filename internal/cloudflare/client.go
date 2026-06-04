@@ -1,11 +1,14 @@
 // -------------------------------------------------------------------------------
-// Cloudflare GraphQL Client
+// Cloudflare API Client
 //
 // Authors: Alex Freidah, Aaron Florey
 //
-// HTTP client for the Cloudflare GraphQL Analytics API. Queries firewall events
-// and HTTP traffic statistics. Handles rate limiting, response parsing, and
-// seek-based pagination via datetime filters.
+// HTTP client for the Cloudflare APIs. Queries firewall events and HTTP traffic
+// statistics via the GraphQL Analytics API, and account audit logs via the REST
+// Audit Logs API. Handles rate limiting with exponential backoff, response
+// parsing, GraphQL datetime seek pagination, and REST cursor pagination. All
+// outbound requests share a single retrying executor that records the HTTP
+// status on the active trace span.
 // -------------------------------------------------------------------------------
 
 package cloudflare
@@ -25,6 +28,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -59,7 +63,7 @@ const (
 // CLIENT
 // -------------------------------------------------------------------------
 
-// Client talks to the Cloudflare GraphQL Analytics API.
+// Client talks to the Cloudflare GraphQL Analytics and REST Audit Logs APIs.
 type Client struct {
 	apiToken      string
 	endpoint      string
@@ -67,7 +71,7 @@ type Client struct {
 	httpClient    *http.Client
 }
 
-// NewClient creates a Cloudflare GraphQL client.
+// NewClient creates a Cloudflare API client.
 func NewClient(apiToken string) *Client {
 	return &Client{
 		apiToken:      apiToken,
@@ -389,58 +393,32 @@ func (c *Client) QueryAuditLogs(ctx context.Context, accountID string, since, be
 	return allEvents, nil
 }
 
-// doAuditQuery executes a single page request to the audit logs REST API.
+// doAuditQuery executes a single page request to the audit logs REST API. The
+// request is rebuilt for every attempt by the shared retrying executor, so no
+// per-request state leaks across retries.
 func (c *Client) doAuditQuery(ctx context.Context, endpoint string, since, before time.Time, cursor string) ([]AuditLogEvent, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	respBody, statusCode, err := c.doWithRetry(ctx, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		q := req.URL.Query()
+		q.Set("since", since.UTC().Format(time.RFC3339))
+		q.Set("before", before.UTC().Format(time.RFC3339))
+		q.Set("limit", fmt.Sprintf("%d", auditQueryLimit))
+		q.Set("direction", "asc")
+		if cursor != "" {
+			q.Set("cursor", cursor)
+		}
+		req.URL.RawQuery = q.Encode()
+
+		req.Header.Set("Authorization", "Bearer "+c.apiToken)
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 	if err != nil {
-		return nil, "", fmt.Errorf("create request: %w", err)
-	}
-
-	q := req.URL.Query()
-	q.Set("since", since.UTC().Format(time.RFC3339))
-	q.Set("before", before.UTC().Format(time.RFC3339))
-	q.Set("limit", fmt.Sprintf("%d", auditQueryLimit))
-	q.Set("direction", "asc")
-	if cursor != "" {
-		q.Set("cursor", cursor)
-	}
-	req.URL.RawQuery = q.Encode()
-
-	req.Header.Set("Authorization", "Bearer "+c.apiToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	var respBody []byte
-	var statusCode int
-
-	for attempt := range maxRetries + 1 {
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, "", fmt.Errorf("http request: %w", err)
-		}
-
-		respBody, err = io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-		_ = resp.Body.Close()
-		if err != nil {
-			return nil, "", fmt.Errorf("read response: %w", err)
-		}
-
-		statusCode = resp.StatusCode
-
-		if !isRetryable(statusCode) || attempt == maxRetries {
-			break
-		}
-
-		delay := retryDelay(resp.Header, attempt)
-		slog.WarnContext(ctx, "Cloudflare API returned retryable status, backing off",
-			"status", statusCode, "attempt", attempt+1, "delay", delay)
-
-		retryTimer := time.NewTimer(delay)
-		select {
-		case <-retryTimer.C:
-		case <-ctx.Done():
-			retryTimer.Stop()
-			return nil, "", ctx.Err()
-		}
+		return nil, "", err
 	}
 
 	if statusCode != http.StatusOK {
@@ -474,59 +452,26 @@ func (c *Client) doQuery(ctx context.Context, zoneID, query string, variables ma
 	)
 	defer span.End()
 
-	reqBody := graphQLRequest{
-		Query:     query,
-		Variables: variables,
-	}
-
-	payload, err := json.Marshal(reqBody)
+	payload, err := json.Marshal(graphQLRequest{Query: query, Variables: variables})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	var respBody []byte
-	var statusCode int
-
-	for attempt := range maxRetries + 1 {
+	respBody, statusCode, err := c.doWithRetry(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
 		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
+			return nil, err
 		}
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+c.apiToken)
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("http request: %w", err)
-		}
-
-		respBody, err = io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-		_ = resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("read response: %w", err)
-		}
-
-		statusCode = resp.StatusCode
-
-		if !isRetryable(statusCode) || attempt == maxRetries {
-			break
-		}
-
-		delay := retryDelay(resp.Header, attempt)
-		slog.WarnContext(ctx, "Cloudflare API returned retryable status, backing off",
-			"status", statusCode, "attempt", attempt+1, "delay", delay)
-
-		retryTimer := time.NewTimer(delay)
-		select {
-		case <-retryTimer.C:
-		case <-ctx.Done():
-			retryTimer.Stop()
-			return nil, ctx.Err()
-		}
+		return req, nil
+	})
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
 	}
-
-	span.SetAttributes(attribute.Int("http.status_code", statusCode))
 
 	if statusCode != http.StatusOK {
 		err := fmt.Errorf("HTTP %d: %s", statusCode, string(respBody))
@@ -550,6 +495,56 @@ func (c *Client) doQuery(ctx context.Context, zoneID, query string, variables ma
 	}
 
 	return gqlResp.Data, nil
+}
+
+// doWithRetry sends the request produced by buildReq, retrying on retryable
+// status codes with exponential backoff that honors Retry-After. The request is
+// rebuilt for every attempt so no per-request state leaks across retries. The
+// final HTTP status code is recorded on the active span and returned alongside
+// the response body for the caller to interpret.
+func (c *Client) doWithRetry(ctx context.Context, buildReq func() (*http.Request, error)) ([]byte, int, error) {
+	var respBody []byte
+	var statusCode int
+
+	for attempt := range maxRetries + 1 {
+		req, err := buildReq()
+		if err != nil {
+			return nil, 0, fmt.Errorf("create request: %w", err)
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, 0, fmt.Errorf("http request: %w", err)
+		}
+
+		respBody, err = io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, 0, fmt.Errorf("read response: %w", err)
+		}
+
+		statusCode = resp.StatusCode
+
+		if !isRetryable(statusCode) || attempt == maxRetries {
+			break
+		}
+
+		delay := retryDelay(resp.Header, attempt)
+		slog.WarnContext(ctx, "Cloudflare API returned retryable status, backing off",
+			"status", statusCode, "attempt", attempt+1, "delay", delay)
+
+		retryTimer := time.NewTimer(delay)
+		select {
+		case <-retryTimer.C:
+		case <-ctx.Done():
+			retryTimer.Stop()
+			return nil, statusCode, ctx.Err()
+		}
+	}
+
+	trace.SpanFromContext(ctx).SetAttributes(attribute.Int("http.status_code", statusCode))
+
+	return respBody, statusCode, nil
 }
 
 // isRetryable returns true for HTTP status codes that warrant a retry.

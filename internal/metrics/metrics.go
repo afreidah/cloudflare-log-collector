@@ -18,6 +18,10 @@ import (
 // POLL METRICS
 // -------------------------------------------------------------------------
 
+// The "zone" label identifies the polled scope. For the firewall and http
+// datasets it holds the zone name; for the audit dataset it holds the account
+// name, since audit logs are scoped per account rather than per zone.
+
 // PollTotal counts poll attempts by dataset, zone, and status.
 var PollTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "cflog_poll_total",
