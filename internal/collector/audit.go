@@ -5,8 +5,9 @@
 //
 // Polls the Cloudflare Account Audit Logs REST API on a configurable interval
 // and ships events to Loki as structured JSON log lines. Tracks the last-seen
-// event timestamp for seek-based pagination to avoid duplicates across polls.
-// Each poll cycle is wrapped in an OpenTelemetry span for trace correlation.
+// event timestamp as a seek cursor and dedupes the inclusive `since` boundary
+// by event ID so no event ships twice across polls. Each poll cycle is wrapped
+// in an OpenTelemetry span for trace correlation.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -54,6 +55,11 @@ type AuditCollector struct {
 	pollInterval time.Duration
 	lastSeen     time.Time
 	batchSize    int
+
+	// shippedAtCursor holds the IDs of events already shipped at the lastSeen
+	// boundary, so they can be dropped if the API returns them again. See
+	// dropAlreadyShipped for why audit needs this and firewall does not.
+	shippedAtCursor map[string]struct{}
 }
 
 // NewAuditCollector creates an audit log collector for the given account
@@ -121,6 +127,9 @@ func (c *AuditCollector) poll(ctx context.Context) {
 	metrics.PollDuration.WithLabelValues("audit", c.accountName).Observe(time.Since(start).Seconds())
 	metrics.LastPollTimestamp.WithLabelValues("audit", c.accountName).Set(float64(time.Now().Unix()))
 
+	// Drop events already shipped at the previous cursor boundary.
+	events = c.dropAlreadyShipped(events)
+
 	span.SetAttributes(attribute.Int("cflog.event_count", len(events)))
 
 	if len(events) == 0 {
@@ -140,18 +149,57 @@ func (c *AuditCollector) poll(ctx context.Context) {
 
 	slog.InfoContext(ctx, "Audit events pushed to Loki", "account", c.accountName, "count", len(events))
 
-	// --- Update metrics ---
+	// Update metrics.
 	for i := range events {
 		metrics.AuditEventsTotal.WithLabelValues(events[i].Action.Type, c.accountName).Inc()
 	}
 
-	// --- Advance cursor to the last event's timestamp ---
+	// Advance cursor to the last event's timestamp and record the IDs sharing
+	// that timestamp so the next poll can drop them if the API returns them again.
 	lastEvent := events[len(events)-1]
-	if t, err := time.Parse(time.RFC3339Nano, lastEvent.Action.Time); err == nil {
+	if t, ok := parseEventTime(lastEvent.Action.Time); ok {
 		c.lastSeen = t
-	} else if t, err := time.Parse(time.RFC3339, lastEvent.Action.Time); err == nil {
-		c.lastSeen = t
+		c.shippedAtCursor = boundaryIDs(events, lastEvent.Action.Time)
+	} else {
+		slog.WarnContext(ctx, "Unparseable audit event timestamp, cursor not advanced",
+			"account", c.accountName, "time", lastEvent.Action.Time)
 	}
+}
+
+// dropAlreadyShipped removes events already shipped on a previous poll. The
+// audit logs REST API exposes only a `since` lower bound (with no exclusive
+// variant and undocumented inclusivity), so the event(s) at the cursor boundary
+// can be returned again on the next poll. The firewall collector avoids this
+// with the GraphQL datetime_gt (exclusive) filter; the REST API offers no such
+// option, so audit dedupes the boundary by event ID instead. This is safe
+// whether `since` is inclusive or exclusive: when exclusive, the boundary set
+// simply never matches.
+func (c *AuditCollector) dropAlreadyShipped(events []cloudflare.AuditLogEvent) []cloudflare.AuditLogEvent {
+	if len(c.shippedAtCursor) == 0 {
+		return events
+	}
+
+	filtered := events[:0]
+	for i := range events {
+		if _, dup := c.shippedAtCursor[events[i].ID]; dup {
+			continue
+		}
+		filtered = append(filtered, events[i])
+	}
+	return filtered
+}
+
+// boundaryIDs returns the IDs of events whose timestamp equals the cursor
+// boundary. Comparing the raw timestamp string avoids a re-parse and matches
+// exactly what the API returned.
+func boundaryIDs(events []cloudflare.AuditLogEvent, boundary string) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for i := range events {
+		if events[i].Action.Time == boundary {
+			ids[events[i].ID] = struct{}{}
+		}
+	}
+	return ids
 }
 
 // shipToLoki sends audit events to Loki as JSON log lines in batches.

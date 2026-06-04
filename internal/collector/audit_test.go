@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -226,6 +227,69 @@ func TestAuditShipToLoki_InvalidTimestamp(t *testing.T) {
 
 	if len(received) == 0 {
 		t.Error("expected Loki push request even with invalid timestamp")
+	}
+}
+
+// auditCursorServer serves a different page of audit events per poll. The first
+// poll returns e1 and e2; the second returns e2 (the inclusive `since`
+// boundary) and e3, simulating Cloudflare re-returning the boundary event.
+func auditCursorServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var pollCount int
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pollCount++
+		w.Header().Set("Content-Type", "application/json")
+		body := `{"success":true,"result":[
+			{"id":"e2","action":{"type":"settings.modify","time":"2026-03-13T10:00:05Z"}},
+			{"id":"e3","action":{"type":"settings.modify","time":"2026-03-13T10:00:09Z"}}
+		],"result_info":{"count":2,"cursor":""}}`
+		if pollCount == 1 {
+			body = `{"success":true,"result":[
+				{"id":"e1","action":{"type":"settings.modify","time":"2026-03-13T10:00:00Z"}},
+				{"id":"e2","action":{"type":"settings.modify","time":"2026-03-13T10:00:05Z"}}
+			],"result_info":{"count":2,"cursor":""}}`
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+}
+
+func TestAuditPoll_DedupesCursorBoundary(t *testing.T) {
+	cfServer := auditCursorServer(t)
+	t.Cleanup(cfServer.Close)
+
+	var shipped []string
+	lokiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var push struct {
+			Streams []struct {
+				Values [][]string `json:"values"`
+			} `json:"streams"`
+		}
+		_ = json.Unmarshal(body, &push)
+		for _, s := range push.Streams {
+			for _, v := range s.Values {
+				var ev cloudflare.AuditLogEvent
+				if json.Unmarshal([]byte(v[1]), &ev) == nil {
+					shipped = append(shipped, ev.ID)
+				}
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(lokiServer.Close)
+
+	cfg := auditTestConfig(loki.NewClient(lokiServer.URL, "fake"), 100)
+	cfg.CF = cloudflare.NewTestClient(cfServer.URL, "test-token")
+	c := NewAuditCollector(cfg)
+
+	c.poll(context.Background())
+	c.poll(context.Background())
+
+	// e2 sits on the cursor boundary and is returned by both polls; it must
+	// ship exactly once.
+	want := []string{"e1", "e2", "e3"}
+	if !slices.Equal(shipped, want) {
+		t.Errorf("shipped = %v, want %v (boundary event e2 must not ship twice)", shipped, want)
 	}
 }
 
