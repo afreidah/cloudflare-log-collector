@@ -3,6 +3,14 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.17](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.16...v0.1.17) (2026-06-23)
+
+
+### Bug Fixes
+
+* align audit-log collector with logging/error-handling/tracing patterns ([703d671](https://github.com/afreidah/cloudflare-log-collector/commit/703d671e8a4ae9eb0f9694d8df6889fa270f767b)), closes [#38](https://github.com/afreidah/cloudflare-log-collector/issues/38)
+* align audit-log collector with logging/error-handling/tracing patterns ([#39](https://github.com/afreidah/cloudflare-log-collector/issues/39)) ([162e3a4](https://github.com/afreidah/cloudflare-log-collector/commit/162e3a4096cf35d6ab599d3fff9d7fb1c2088e79))
+
 ## [0.1.16](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.15...v0.1.16) (2026-06-01)
 
 
