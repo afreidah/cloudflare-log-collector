@@ -36,11 +36,12 @@ type Config struct {
 
 // CloudflareConfig holds Cloudflare API connection settings.
 type CloudflareConfig struct {
-	APIToken       string          `yaml:"api_token"`
-	Zones          []ZoneConfig    `yaml:"zones"`
-	AuditLogs      AuditLogsConfig `yaml:"audit_logs"`
-	PollInterval   time.Duration   `yaml:"poll_interval"`
-	BackfillWindow time.Duration   `yaml:"backfill_window"`
+	APIToken       string             `yaml:"api_token"`
+	Zones          []ZoneConfig       `yaml:"zones"`
+	AuditLogs      AuditLogsConfig    `yaml:"audit_logs"`
+	WebAnalytics   WebAnalyticsConfig `yaml:"web_analytics"`
+	PollInterval   time.Duration      `yaml:"poll_interval"`
+	BackfillWindow time.Duration      `yaml:"backfill_window"`
 }
 
 // ZoneConfig identifies a single Cloudflare zone to monitor.
@@ -59,6 +60,21 @@ type AuditLogsConfig struct {
 type AccountConfig struct {
 	ID   string `yaml:"id"`
 	Name string `yaml:"name"`
+}
+
+// WebAnalyticsConfig holds RUM / Web Analytics collection settings. The RUM
+// datasets are account-scoped, so all sites share one account_id and are
+// identified by their Web Analytics site tag.
+type WebAnalyticsConfig struct {
+	Enabled   bool         `yaml:"enabled"`
+	AccountID string       `yaml:"account_id"`
+	Sites     []SiteConfig `yaml:"sites"`
+}
+
+// SiteConfig identifies a single Web Analytics site to collect RUM data from.
+type SiteConfig struct {
+	SiteTag string `yaml:"site_tag"`
+	Name    string `yaml:"name"`
 }
 
 // LokiConfig holds Loki push API settings.
@@ -156,6 +172,7 @@ func (c *Config) validate() error {
 	var errs []error
 	errs = append(errs, c.validateCloudflare()...)
 	errs = append(errs, c.validateAuditLogs()...)
+	errs = append(errs, c.validateWebAnalytics()...)
 	if c.Loki.Endpoint == "" {
 		errs = append(errs, fmt.Errorf("loki.endpoint is required"))
 	}
@@ -168,7 +185,7 @@ func (c *Config) validateCloudflare() []error {
 	if c.Cloudflare.APIToken == "" {
 		errs = append(errs, fmt.Errorf("cloudflare.api_token is required"))
 	}
-	if len(c.Cloudflare.Zones) == 0 && !c.Cloudflare.AuditLogs.Enabled {
+	if len(c.Cloudflare.Zones) == 0 && !c.Cloudflare.AuditLogs.Enabled && !c.Cloudflare.WebAnalytics.Enabled {
 		errs = append(errs, fmt.Errorf("cloudflare.zones requires at least one zone"))
 	}
 	for i, z := range c.Cloudflare.Zones {
@@ -197,6 +214,29 @@ func (c *Config) validateAuditLogs() []error {
 		}
 		if a.Name == "" {
 			errs = append(errs, fmt.Errorf("cloudflare.audit_logs.accounts[%d].name is required", i))
+		}
+	}
+	return errs
+}
+
+// validateWebAnalytics checks the Web Analytics sites when collection is enabled.
+func (c *Config) validateWebAnalytics() []error {
+	if !c.Cloudflare.WebAnalytics.Enabled {
+		return nil
+	}
+	var errs []error
+	if c.Cloudflare.WebAnalytics.AccountID == "" {
+		errs = append(errs, fmt.Errorf("cloudflare.web_analytics.account_id is required when enabled"))
+	}
+	if len(c.Cloudflare.WebAnalytics.Sites) == 0 {
+		errs = append(errs, fmt.Errorf("cloudflare.web_analytics.sites requires at least one site when enabled"))
+	}
+	for i, s := range c.Cloudflare.WebAnalytics.Sites {
+		if s.SiteTag == "" {
+			errs = append(errs, fmt.Errorf("cloudflare.web_analytics.sites[%d].site_tag is required", i))
+		}
+		if s.Name == "" {
+			errs = append(errs, fmt.Errorf("cloudflare.web_analytics.sites[%d].name is required", i))
 		}
 	}
 	return errs

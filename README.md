@@ -13,10 +13,11 @@
 
 ![Grafana Dashboard](docs/images/grafana.png)
 
-A lightweight Go service that polls the Cloudflare GraphQL Analytics API for firewall events and HTTP traffic statistics, ships them into a self-hosted observability stack, and traces every poll cycle with OpenTelemetry.
+A lightweight Go service that polls Cloudflare's Analytics, Audit, and Web Analytics APIs for firewall events, HTTP traffic, account audit logs, and browser-side RUM (page views and Core Web Vitals), ships them into a self-hosted observability stack, and traces every poll cycle with OpenTelemetry.
 
-- **Firewall events** are pushed to Loki as structured JSON log lines for querying in Grafana
-- **HTTP traffic stats** are exposed as Prometheus gauges (by method, status, and country) and also pushed to Loki for raw detail
+- **Firewall and audit events** are pushed to Loki as structured JSON log lines for querying in Grafana
+- **HTTP traffic stats** are accumulated into Prometheus counters (by method, status, and country) and also pushed to Loki for raw detail
+- **RUM / Web Analytics** captures real browser page views and Core Web Vitals (LCP, INP, CLS, FCP, TTFB) per site
 - **Every poll cycle** gets its own OpenTelemetry trace with child spans for API calls and Loki pushes, exported to Tempo via OTLP gRPC
 - **Log-trace correlation** is automatic - `trace_id` and `span_id` are injected into every structured log line via a custom slog handler, enabling one-click navigation between Loki logs and Tempo traces in Grafana
 
@@ -55,9 +56,17 @@ Fields captured: `action`, `clientIP`, `clientRequestHTTPHost`, `clientRequestHT
 
 ### HTTP Traffic (`httpRequestsAdaptiveGroups`)
 
-Aggregated HTTP traffic statistics grouped by method, status code, and country. Pushed to both Prometheus (gauges) and Loki (structured JSON under `{job="cloudflare", type="http_traffic", zone="example.com"}`).
+Aggregated HTTP traffic statistics grouped by method, status code, and country. Pushed to both Prometheus (cumulative counters) and Loki (structured JSON under `{job="cloudflare", type="http_traffic", zone="example.com"}`).
 
 Fields captured: `count`, `datetime`, `clientRequestHTTPMethodName`, `edgeResponseStatus`, `clientCountryName`, `edgeResponseBytes`.
+
+### RUM / Web Analytics (`rumPageloadEventsAdaptiveGroups`, `rumWebVitalsEventsAdaptiveGroups`)
+
+Browser-side Real User Monitoring, scoped per Web Analytics site. Page loads are pushed to Loki under `{job="cloudflare", type="rum_pageload", site="example.com"}` and counted (page views and sessions by country and device) in Prometheus. Core Web Vitals (LCP, INP, FID, FCP, TTFB, CLS) p75 are exposed as Prometheus gauges, sliced by device.
+
+The datasets are account-scoped and identified by a site tag. Web Analytics must be enabled on the zone, and the API token needs Account Analytics Read. RUM collection is disabled by default.
+
+Fields captured: pageloads - `count`, `sum.visits`, dimensions `requestPath`, `countryName`, `deviceType`, `refererHost`; web vitals - per-device p75 quantiles of each Core Web Vital (values in microseconds, except CLS which is a unitless score).
 
 ### Account Audit Logs
 
@@ -78,23 +87,28 @@ Exposed on the configured metrics listen address (default `:9101`).
 | `cflog_last_poll_timestamp` | gauge | `dataset`, `zone` | Unix timestamp of last successful poll |
 | `cflog_firewall_events_total` | counter | `action`, `zone` | Firewall events by action type |
 | `cflog_audit_events_total` | counter | `action`, `account` | Audit log events by action type |
-| `cflog_http_requests` | gauge | `method`, `status`, `country`, `zone` | HTTP request counts from last poll window |
-| `cflog_http_bytes` | gauge | `type`, `zone` | Edge response bytes from last poll window |
+| `cflog_http_requests_total` | counter | `method`, `status`, `country`, `zone` | Cumulative HTTP requests |
+| `cflog_http_bytes_total` | counter | `type`, `zone` | Cumulative edge response bytes |
+| `cflog_rum_pageviews_total` | counter | `country`, `device`, `site` | RUM page views |
+| `cflog_rum_sessions_total` | counter | `country`, `device`, `site` | RUM sessions (entry page loads) |
+| `cflog_rum_web_vital_seconds` | gauge | `vital`, `device`, `site` | Core Web Vitals p75 in seconds (lcp, inp, fid, fcp, ttfb) |
+| `cflog_rum_cumulative_layout_shift` | gauge | `device`, `site` | Cumulative Layout Shift p75 (unitless) |
 | `cflog_loki_push_total` | counter | `status` | Loki push attempts by outcome |
 | `cflog_loki_push_duration_seconds` | histogram | | Loki push latency |
 | `cflog_build_info` | gauge | `version`, `go_version` | Build metadata |
 
 ## Loki Streams
 
-Three log streams are pushed to Loki:
+Log streams pushed to Loki:
 
 | Stream | Labels | Content |
 |--------|--------|---------|
 | Firewall events | `{job="cloudflare", type="firewall", zone="example.com"}` | One JSON log line per firewall event |
 | HTTP traffic | `{job="cloudflare", type="http_traffic", zone="example.com"}` | One JSON log line per traffic group |
 | Audit logs | `{job="cloudflare", type="audit", account="my-account"}` | One JSON log line per audit event |
+| RUM page loads | `{job="cloudflare", type="rum_pageload", site="example.com"}` | One JSON log line per page-load group |
 
-Both streams include `X-Scope-OrgID` header for multi-tenant Loki deployments (configurable via `tenant_id`).
+All streams include the `X-Scope-OrgID` header for multi-tenant Loki deployments (configurable via `tenant_id`).
 
 ## Configuration
 
@@ -111,6 +125,12 @@ cloudflare:
     accounts:
       - id: "${CF_ACCOUNT_ID}"
         name: "my-account"
+  web_analytics:                      # Browser-side RUM collection (optional)
+    enabled: false                    # Disabled by default
+    account_id: "${CF_ACCOUNT_ID}"    # Account that owns the Web Analytics sites
+    sites:
+      - site_tag: "${CF_RUM_SITE_TAG}" # Web Analytics site identifier
+        name: "example.com"
   poll_interval: 5m                   # How often to poll (default: 5m)
   backfill_window: 1h                 # On startup, fetch this far back (default: 1h)
 
@@ -137,9 +157,11 @@ logging:
 
 The API token requires the following permissions:
 
-- **Account Analytics** - Read (for zone analytics)
-- **Zone Analytics** - Read (for zone analytics)
+- **Zone Analytics** - Read (for firewall and HTTP zone analytics)
+- **Account Analytics** - Read (required for RUM / Web Analytics)
 - **Account Settings** - Read (required for audit logs)
+
+RUM also requires Web Analytics to be enabled on the zone.
 
 Create one at [Cloudflare Dashboard > API Tokens](https://dash.cloudflare.com/profile/api-tokens).
 
@@ -216,15 +238,22 @@ make clean                  # remove build artifacts
 |       `-- main.go                   # Entry point, config, signal handling
 |-- internal/
 |   |-- cloudflare/
-|   |   |-- client.go                 # GraphQL API client, query builders
-|   |   `-- client_test.go
+|   |   |-- client.go                 # Core API client, HTTP transport + retry
+|   |   |-- graphql.go                # Shared GraphQL envelope + executor
+|   |   |-- firewall.go               # firewallEventsAdaptive query
+|   |   |-- http.go                   # httpRequestsAdaptiveGroups query
+|   |   |-- rum.go                     # RUM / Web Analytics queries
+|   |   |-- audit.go                  # REST audit logs query
+|   |   |-- client_test.go, rum_test.go, transport_test.go
 |   |-- collector/
-|   |   |-- audit.go                  # Audit log poller, Loki shipper
-|   |   |-- audit_test.go
 |   |   |-- firewall.go               # Firewall event poller, Loki shipper
-|   |   |-- firewall_test.go
-|   |   |-- http.go                   # HTTP traffic poller, metrics + Loki
-|   |   `-- http_test.go
+|   |   |-- http.go                   # HTTP traffic poller, counters + Loki
+|   |   |-- audit.go                  # Audit log poller, Loki shipper
+|   |   |-- rum.go                     # RUM poller: counters, vitals, Loki
+|   |   |-- consumer_interfaces.go    # Narrow consumer-declared interfaces
+|   |   |-- dataset.go                # Typed dataset name constants
+|   |   |-- cursor.go                 # Shared seek-cursor helpers
+|   |   `-- *_test.go
 |   |-- config/
 |   |   |-- config.go                 # YAML config with env var expansion
 |   |   `-- config_test.go
