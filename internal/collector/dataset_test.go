@@ -22,6 +22,9 @@ func TestDatasetString(t *testing.T) {
 		{"firewall", DatasetFirewall, "firewall"},
 		{"http", DatasetHTTP, "http"},
 		{"audit", DatasetAudit, "audit"},
+		{"rum", DatasetRUM, "rum"},
+		{"rum_pageload", DatasetRUMPageload, "rum_pageload"},
+		{"rum_web_vitals", DatasetRUMWebVitals, "rum_web_vitals"},
 	}
 
 	for _, tt := range tests {
@@ -36,7 +39,7 @@ func TestDatasetString(t *testing.T) {
 // TestDatasetStringMatchesConversion guards against String() drifting away from
 // a plain string conversion of the underlying value.
 func TestDatasetStringMatchesConversion(t *testing.T) {
-	for _, d := range []Dataset{DatasetFirewall, DatasetHTTP, DatasetAudit} {
+	for _, d := range []Dataset{DatasetFirewall, DatasetHTTP, DatasetAudit, DatasetRUM, DatasetRUMPageload, DatasetRUMWebVitals} {
 		if d.String() != string(d) {
 			t.Errorf("Dataset.String() = %q, want %q", d.String(), string(d))
 		}

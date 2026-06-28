@@ -278,6 +278,68 @@ func TestValidation_MissingLokiEndpoint(t *testing.T) {
 	}
 }
 
+func TestValidation_WebAnalyticsMissingAccountID(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cloudflare.WebAnalytics = WebAnalyticsConfig{
+		Enabled: true,
+		Sites:   []SiteConfig{{SiteTag: "s1", Name: "example.com"}},
+	}
+
+	if err := cfg.setDefaultsAndValidate(); err == nil {
+		t.Error("validation should fail when web_analytics.account_id is empty")
+	}
+}
+
+func TestValidation_WebAnalyticsNoSites(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cloudflare.WebAnalytics = WebAnalyticsConfig{Enabled: true, AccountID: "acct1"}
+
+	if err := cfg.setDefaultsAndValidate(); err == nil {
+		t.Error("validation should fail when web_analytics is enabled with no sites")
+	}
+}
+
+func TestValidation_WebAnalyticsMissingSiteTag(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cloudflare.WebAnalytics = WebAnalyticsConfig{
+		Enabled:   true,
+		AccountID: "acct1",
+		Sites:     []SiteConfig{{Name: "example.com"}},
+	}
+
+	if err := cfg.setDefaultsAndValidate(); err == nil {
+		t.Error("validation should fail when site_tag is empty")
+	}
+}
+
+func TestValidation_WebAnalyticsMissingSiteName(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cloudflare.WebAnalytics = WebAnalyticsConfig{
+		Enabled:   true,
+		AccountID: "acct1",
+		Sites:     []SiteConfig{{SiteTag: "s1"}},
+	}
+
+	if err := cfg.setDefaultsAndValidate(); err == nil {
+		t.Error("validation should fail when site name is empty")
+	}
+}
+
+func TestValidation_WebAnalyticsOnlyIsValid(t *testing.T) {
+	// A config with only Web Analytics enabled (no zones, no audit) is valid.
+	cfg := validConfig()
+	cfg.Cloudflare.Zones = nil
+	cfg.Cloudflare.WebAnalytics = WebAnalyticsConfig{
+		Enabled:   true,
+		AccountID: "acct1",
+		Sites:     []SiteConfig{{SiteTag: "s1", Name: "example.com"}},
+	}
+
+	if err := cfg.setDefaultsAndValidate(); err != nil {
+		t.Errorf("web-analytics-only config should be valid, got: %v", err)
+	}
+}
+
 func TestValidation_MultipleErrors(t *testing.T) {
 	cfg := Config{}
 
@@ -319,4 +381,3 @@ func TestParseLogLevel(t *testing.T) {
 		})
 	}
 }
-

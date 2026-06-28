@@ -39,6 +39,14 @@ type auditQuerier interface {
 	QueryAuditLogs(ctx context.Context, accountID string, since, before time.Time) ([]cloudflare.AuditLogEvent, error)
 }
 
+// rumQuerier is the RUM collector's view of the Cloudflare client. The RUM
+// collector polls both account-scoped Web Analytics datasets in one cycle, so
+// it declares both query methods.
+type rumQuerier interface {
+	QueryRUMPageloads(ctx context.Context, accountID, siteTag string, since, until time.Time) ([]cloudflare.RUMPageloadGroup, error)
+	QueryRUMWebVitals(ctx context.Context, accountID, siteTag string, since, until time.Time) ([]cloudflare.RUMWebVitalsGroup, error)
+}
+
 // cloudflareQuerier composes the two zone-scoped queriers for the shared
 // CollectorConfig that the firewall and HTTP collectors both build from. Each
 // collector narrows it to the single query method it actually calls.

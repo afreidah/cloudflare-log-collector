@@ -106,12 +106,13 @@ func main() {
 	}
 
 	// --- Log startup info ---
-	zoneNames, accountNames := collectorNames(cfg)
+	zoneNames, accountNames, siteNames := collectorNames(cfg)
 
 	slog.Info("Cloudflare Log Collector starting",
 		"version", telemetry.Version,
 		"zones", zoneNames,
 		"audit_accounts", accountNames,
+		"web_analytics_sites", siteNames,
 		"listen", cfg.Metrics.Listen,
 		"poll_interval", cfg.Cloudflare.PollInterval,
 		"backfill_window", cfg.Cloudflare.BackfillWindow,
@@ -218,15 +219,43 @@ func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Clien
 		}
 	}
 
+	if cfg.Cloudflare.WebAnalytics.Enabled {
+		for _, site := range cfg.Cloudflare.WebAnalytics.Sites {
+			rc := collector.RUMCollectorConfig{
+				CF:             cf,
+				Loki:           lk,
+				AccountID:      cfg.Cloudflare.WebAnalytics.AccountID,
+				SiteTag:        site.SiteTag,
+				SiteName:       site.Name,
+				PollInterval:   cfg.Cloudflare.PollInterval,
+				BackfillWindow: cfg.Cloudflare.BackfillWindow,
+				BatchSize:      cfg.Loki.BatchSize,
+			}
+
+			planned = append(planned, namedRunner{
+				name:   fmt.Sprintf("%s-%s", collector.DatasetRUM, site.Name),
+				runner: collector.NewRUMCollector(rc),
+			})
+		}
+	}
+
 	return planned
 }
 
-// collectorNames returns the configured zone names and, when audit logging is
-// enabled, the account names. Used to populate the startup log line.
-func collectorNames(cfg *config.Config) (zones, accounts []string) {
+// collectorNames returns the configured zone names and, when the respective
+// collection is enabled, the audit account names and Web Analytics site names.
+// Used to populate the startup log line.
+func collectorNames(cfg *config.Config) (zones, accounts, sites []string) {
 	zones = make([]string, len(cfg.Cloudflare.Zones))
 	for i, z := range cfg.Cloudflare.Zones {
 		zones[i] = z.Name
+	}
+
+	if cfg.Cloudflare.WebAnalytics.Enabled {
+		sites = make([]string, len(cfg.Cloudflare.WebAnalytics.Sites))
+		for i, s := range cfg.Cloudflare.WebAnalytics.Sites {
+			sites[i] = s.Name
+		}
 	}
 
 	if cfg.Cloudflare.AuditLogs.Enabled {
@@ -236,5 +265,5 @@ func collectorNames(cfg *config.Config) (zones, accounts []string) {
 		}
 	}
 
-	return zones, accounts
+	return zones, accounts, sites
 }

@@ -30,6 +30,7 @@ var (
 	_ firewallQuerier   = (*cloudflare.Client)(nil)
 	_ httpQuerier       = (*cloudflare.Client)(nil)
 	_ auditQuerier      = (*cloudflare.Client)(nil)
+	_ rumQuerier        = (*cloudflare.Client)(nil)
 	_ logPusher         = (*loki.Client)(nil)
 )
 

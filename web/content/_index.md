@@ -12,6 +12,7 @@ description: "Cloudflare analytics collector for self-hosted observability stack
 
 {{% badge style="primary" icon="fas fa-shield-alt" %}}Firewall Events{{% /badge %}}
 {{% badge style="info" title=" " icon="fas fa-chart-line" %}}HTTP Traffic Stats{{% /badge %}}
+{{% badge style="info" icon="fas fa-gauge-high" %}}RUM & Web Vitals{{% /badge %}}
 {{% badge style="danger" icon="fas fa-fire" %}}Prometheus Metrics{{% /badge %}}
 {{% badge style="green" icon="fas fa-stream" %}}Loki Log Streams{{% /badge %}}
 {{% badge style="warning" title=" " icon="fas fa-project-diagram" %}}OpenTelemetry Tracing{{% /badge %}}
@@ -32,12 +33,13 @@ description: "Cloudflare analytics collector for self-hosted observability stack
 
 <h2 style="text-align: center; color: #38bdf8;">Cloudflare analytics for your self-hosted stack</h2>
 
-A lightweight Go service that polls the Cloudflare GraphQL Analytics API for firewall events and HTTP traffic statistics, ships them into a self-hosted observability stack, and traces every poll cycle with OpenTelemetry.
+A lightweight Go service that polls Cloudflare's Analytics, Audit, and Web Analytics APIs for firewall events, HTTP traffic, account audit logs, and browser-side RUM (page views and Core Web Vitals), ships them into a self-hosted observability stack, and traces every poll cycle with OpenTelemetry.
 
 <div class="hero-bullets">
 
-- **Firewall events** are pushed to Loki as structured JSON log lines for querying in Grafana
-- **HTTP traffic stats** are exposed as Prometheus gauges and also pushed to Loki for raw detail
+- **Firewall and audit events** are pushed to Loki as structured JSON log lines for querying in Grafana
+- **HTTP traffic stats** are accumulated into Prometheus counters and also pushed to Loki for raw detail
+- **RUM / Web Analytics** captures real browser page views and Core Web Vitals (LCP, INP, CLS, FCP, TTFB) per site
 - **Every poll cycle** gets its own OpenTelemetry trace with child spans, exported to Tempo via OTLP gRPC
 - **Log-trace correlation** is automatic - `trace_id` and `span_id` are injected into every structured log line
 
@@ -60,21 +62,28 @@ A lightweight Go service that polls the Cloudflare GraphQL Analytics API for fir
       <strong>HTTP Traffic Statistics</strong>
       <p>Aggregated request counts grouped by method, status code, and country.</p>
     </div>
-    <div class="feature-detail">Polls httpRequestsAdaptiveGroups for traffic aggregates. Data is exposed as Prometheus gauges for dashboarding and also pushed to Loki for raw queryability.</div>
+    <div class="feature-detail">Polls httpRequestsAdaptiveGroups for traffic aggregates. Data is accumulated into cumulative Prometheus counters for dashboarding and also pushed to Loki for raw queryability.</div>
+  </div>
+  <div class="feature-item">
+    <div>
+      <strong>RUM &amp; Web Vitals</strong>
+      <p>Browser-side Real User Monitoring: real page views and Core Web Vitals per site.</p>
+    </div>
+    <div class="feature-detail">Polls the account-scoped rumPageloadEventsAdaptiveGroups and rumWebVitalsEventsAdaptiveGroups datasets. Page views and sessions become Prometheus counters and Loki rows; Core Web Vitals (LCP, INP, FID, FCP, TTFB, CLS) p75 become gauges by device. Optional, per Web Analytics site.</div>
   </div>
   <div class="feature-item">
     <div>
       <strong>Prometheus Metrics</strong>
-      <p>Rich metrics covering poll health, firewall events, HTTP traffic, and Loki push status.</p>
+      <p>Rich metrics covering poll health, firewall and audit events, HTTP traffic, RUM, and Loki push status.</p>
     </div>
-    <div class="feature-detail">Exposes poll counters and histograms, firewall event counts by action, HTTP request gauges by method/status/country, Loki push success/failure rates, and build info.</div>
+    <div class="feature-detail">Exposes poll counters and histograms, firewall and audit event counts by action, HTTP request and byte counters, RUM page views and Core Web Vitals gauges, Loki push success/failure rates, and build info.</div>
   </div>
   <div class="feature-item">
     <div>
       <strong>Loki Integration</strong>
       <p>Pushes structured JSON log streams directly to Loki's push API.</p>
     </div>
-    <div class="feature-detail">Two log streams: firewall events and HTTP traffic, each with distinct labels. Supports multi-tenant Loki via configurable X-Scope-OrgID header. Automatic batching and retry with exponential backoff.</div>
+    <div class="feature-detail">Log streams for firewall events, HTTP traffic, audit logs, and RUM page loads, each with distinct labels. Supports multi-tenant Loki via configurable X-Scope-OrgID header. Automatic batching and retry with exponential backoff.</div>
   </div>
   <div class="feature-item">
     <div>

@@ -115,7 +115,7 @@ func TestPlannedCollectors_AuditDisabledSkipsAccounts(t *testing.T) {
 }
 
 func TestCollectorNames_ZonesOnly(t *testing.T) {
-	zones, accounts := collectorNames(testConfig(false))
+	zones, accounts, sites := collectorNames(testConfig(false))
 
 	if want := []string{"example.com", "example.org"}; !equalStrings(zones, want) {
 		t.Errorf("zone names = %v, want %v", zones, want)
@@ -123,15 +123,70 @@ func TestCollectorNames_ZonesOnly(t *testing.T) {
 	if len(accounts) != 0 {
 		t.Errorf("account names = %v, want empty", accounts)
 	}
+	if len(sites) != 0 {
+		t.Errorf("site names = %v, want empty", sites)
+	}
 }
 
 func TestCollectorNames_WithAudit(t *testing.T) {
-	zones, accounts := collectorNames(testConfig(true))
+	zones, accounts, _ := collectorNames(testConfig(true))
 
 	if want := []string{"example.com", "example.org"}; !equalStrings(zones, want) {
 		t.Errorf("zone names = %v, want %v", zones, want)
 	}
 	if want := []string{"acme"}; !equalStrings(accounts, want) {
 		t.Errorf("account names = %v, want %v", accounts, want)
+	}
+}
+
+// withWebAnalytics returns a zones-only config with Web Analytics enabled for
+// two sites.
+func withWebAnalytics() *config.Config {
+	cfg := testConfig(false)
+	cfg.Cloudflare.WebAnalytics = config.WebAnalyticsConfig{
+		Enabled:   true,
+		AccountID: "acct1",
+		Sites: []config.SiteConfig{
+			{SiteTag: "tag1", Name: "example.com"},
+			{SiteTag: "tag2", Name: "example.org"},
+		},
+	}
+	return cfg
+}
+
+func TestPlannedCollectors_WithWebAnalytics(t *testing.T) {
+	cf := cloudflare.NewClient("token")
+	lk := loki.NewClient("http://loki", "tenant")
+
+	planned := plannedCollectors(withWebAnalytics(), cf, lk)
+
+	want := []string{
+		"firewall-example.com", "http-example.com",
+		"firewall-example.org", "http-example.org",
+		"rum-example.com", "rum-example.org",
+	}
+	if got := names(planned); !equalStrings(got, want) {
+		t.Errorf("registration names = %v, want %v", got, want)
+	}
+}
+
+func TestPlannedCollectors_WebAnalyticsDisabledSkipsSites(t *testing.T) {
+	cfg := withWebAnalytics()
+	cfg.Cloudflare.WebAnalytics.Enabled = false
+
+	planned := plannedCollectors(cfg, cloudflare.NewClient("t"), loki.NewClient("http://loki", "t"))
+
+	for _, p := range planned {
+		if p.name == "rum-example.com" {
+			t.Errorf("RUM collector registered while web analytics disabled")
+		}
+	}
+}
+
+func TestCollectorNames_WithWebAnalytics(t *testing.T) {
+	_, _, sites := collectorNames(withWebAnalytics())
+
+	if want := []string{"example.com", "example.org"}; !equalStrings(sites, want) {
+		t.Errorf("site names = %v, want %v", sites, want)
 	}
 }

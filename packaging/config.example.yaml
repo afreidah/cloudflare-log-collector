@@ -17,6 +17,15 @@ cloudflare:
     accounts:
       - id: "${CF_ACCOUNT_ID}"
         name: "my-account"
+  # Browser-side RUM / Web Analytics collection (disabled by default). Web
+  # Analytics must be enabled on the zone, and the API token needs Account
+  # Analytics Read. site_tag is the Web Analytics site identifier.
+  web_analytics:
+    enabled: false
+    account_id: "${CF_ACCOUNT_ID}"
+    sites:
+      - site_tag: "${CF_RUM_SITE_TAG}"
+        name: "example.com"
   poll_interval: 5m
   backfill_window: 1h
 

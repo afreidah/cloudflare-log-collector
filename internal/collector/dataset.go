@@ -24,6 +24,16 @@ const (
 
 	// DatasetAudit is the account audit logs dataset.
 	DatasetAudit Dataset = "audit"
+
+	// DatasetRUM names the RUM collector as a whole (used for its lifecycle
+	// registration key); the two RUM datasets below carry the metric labels.
+	DatasetRUM Dataset = "rum"
+
+	// DatasetRUMPageload is the rumPageloadEventsAdaptiveGroups dataset.
+	DatasetRUMPageload Dataset = "rum_pageload"
+
+	// DatasetRUMWebVitals is the rumWebVitalsEventsAdaptiveGroups dataset.
+	DatasetRUMWebVitals Dataset = "rum_web_vitals"
 )
 
 // String returns the dataset name for use where a plain string is required,

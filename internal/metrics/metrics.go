@@ -76,6 +76,41 @@ var AuditEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 }, []string{"action", "account"})
 
 // -------------------------------------------------------------------------
+// RUM / WEB ANALYTICS METRICS
+// -------------------------------------------------------------------------
+
+// The RUM page-view and session counters are kept at bounded cardinality
+// (country x device x site); the high-cardinality request path and referer are
+// shipped to Loki instead. The web-vital gauges report the p75 over the latest
+// poll's rolling window - quantiles cannot be accumulated into a counter.
+
+// RUMPageviewsTotal counts browser-side page views by country, device, and site.
+var RUMPageviewsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "cflog_rum_pageviews_total",
+	Help: "Total RUM page views observed via Cloudflare Web Analytics by country, device, and site",
+}, []string{"country", "device", "site"})
+
+// RUMSessionsTotal counts RUM sessions (entry page loads) by country, device, and site.
+var RUMSessionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "cflog_rum_sessions_total",
+	Help: "Total RUM sessions (entry page loads) observed via Cloudflare Web Analytics by country, device, and site",
+}, []string{"country", "device", "site"})
+
+// RUMWebVitalSeconds reports the p75 of each time-based Core Web Vital in
+// seconds, by vital, device, and site.
+var RUMWebVitalSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "cflog_rum_web_vital_seconds",
+	Help: "RUM Core Web Vitals p75 in seconds (time-based vitals: lcp, inp, fid, fcp, ttfb) by vital, device, and site",
+}, []string{"vital", "device", "site"})
+
+// RUMCumulativeLayoutShift reports the p75 Cumulative Layout Shift (a unitless
+// score, so it has its own metric) by device and site.
+var RUMCumulativeLayoutShift = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "cflog_rum_cumulative_layout_shift",
+	Help: "RUM Cumulative Layout Shift p75 (unitless layout-shift score) by device and site",
+}, []string{"device", "site"})
+
+// -------------------------------------------------------------------------
 // LOKI METRICS
 // -------------------------------------------------------------------------
 
