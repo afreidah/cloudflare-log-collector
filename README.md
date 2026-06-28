@@ -5,6 +5,8 @@
 # Cloudflare Log Collector
 
 [![CI](https://github.com/afreidah/cloudflare-log-collector/actions/workflows/ci.yml/badge.svg)](https://github.com/afreidah/cloudflare-log-collector/actions/workflows/ci.yml)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=afreidah_cloudflare-log-collector&metric=coverage)](https://sonarcloud.io/summary/new_code?id=afreidah_cloudflare-log-collector)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=afreidah_cloudflare-log-collector&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=afreidah_cloudflare-log-collector)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 <p align="center">
