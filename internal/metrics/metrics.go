@@ -7,6 +7,8 @@
 // registration. Tracks poll operations, Loki pushes, and Cloudflare event counts.
 // -------------------------------------------------------------------------------
 
+// Package metrics defines and registers the Prometheus metrics exported by the
+// collector: poll operations, Loki pushes, and Cloudflare event counts.
 package metrics
 
 import (
@@ -51,16 +53,20 @@ var FirewallEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help: "Cloudflare firewall events by action",
 }, []string{"action", "zone"})
 
-// HTTPRequests tracks HTTP request counts from the last poll window.
-var HTTPRequests = promauto.NewGaugeVec(prometheus.GaugeOpts{
-	Name: "cflog_http_requests",
-	Help: "HTTP request counts from last poll window",
+// HTTPRequestsTotal counts HTTP requests by method, status, country, and zone.
+// It is cumulative: each non-overlapping poll window adds its counts, so the
+// value is immune to poll-window length (backfill, missed polls) and dashboards
+// apply rate()/increase() rather than reading a per-window snapshot.
+var HTTPRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "cflog_http_requests_total",
+	Help: "Total HTTP requests observed via Cloudflare analytics by method, status, country, and zone",
 }, []string{"method", "status", "country", "zone"})
 
-// HTTPBytes tracks byte counts by type and zone from the last poll window.
-var HTTPBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
-	Name: "cflog_http_bytes",
-	Help: "HTTP bytes by type from last poll window",
+// HTTPBytesTotal counts HTTP response bytes by type and zone, cumulative across
+// poll windows like HTTPRequestsTotal.
+var HTTPBytesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "cflog_http_bytes_total",
+	Help: "Total HTTP response bytes observed via Cloudflare analytics by type and zone",
 }, []string{"type", "zone"})
 
 // AuditEventsTotal counts audit log events by action type and account.

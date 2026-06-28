@@ -4,10 +4,12 @@
 // Author: Alex Freidah
 //
 // Manages background service goroutines with panic recovery, automatic restart,
-// and ordered shutdown. Services implement the Service interface (blocking Run
-// method); optional Stoppable interface adds explicit cleanup on shutdown.
+// and ordered shutdown. Services implement the Runner interface (blocking Run
+// method); the optional Stopper interface adds explicit cleanup on shutdown.
 // -------------------------------------------------------------------------------
 
+// Package lifecycle supervises background services with panic recovery,
+// automatic restart, and ordered shutdown.
 package lifecycle
 
 import (
@@ -19,22 +21,22 @@ import (
 	"time"
 )
 
-// Service represents a long-running background task. Run blocks until ctx is
+// Runner represents a long-running background task. Run blocks until ctx is
 // cancelled or a fatal error occurs.
-type Service interface {
+type Runner interface {
 	Run(ctx context.Context) error
 }
 
-// Stoppable is an optional interface for services that need explicit cleanup
+// Stopper is an optional interface for services that need explicit cleanup
 // beyond context cancellation.
-type Stoppable interface {
+type Stopper interface {
 	Stop(ctx context.Context) error
 }
 
 // entry pairs a service with its registration name for logging and ordering.
 type entry struct {
 	name    string
-	service Service
+	service Runner
 }
 
 // Manager registers and supervises background services.
@@ -49,7 +51,7 @@ func NewManager() *Manager {
 
 // Register adds a named service. Services start in registration order and stop
 // in reverse order.
-func (m *Manager) Register(name string, svc Service) {
+func (m *Manager) Register(name string, svc Runner) {
 	m.services = append(m.services, entry{name: name, service: svc})
 }
 
@@ -69,14 +71,14 @@ func (m *Manager) Run(ctx context.Context) {
 	wg.Wait()
 }
 
-// Stop calls Stop on services that implement Stoppable, in reverse
+// Stop calls Stop on services that implement Stopper, in reverse
 // registration order, bounded by the given timeout.
 func (m *Manager) Stop(timeout time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	for i := len(m.services) - 1; i >= 0; i-- {
-		if s, ok := m.services[i].service.(Stoppable); ok {
+		if s, ok := m.services[i].service.(Stopper); ok {
 			if err := s.Stop(ctx); err != nil {
 				slog.Error("Service stop error",
 					"service", m.services[i].name,

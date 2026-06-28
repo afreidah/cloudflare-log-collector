@@ -163,13 +163,15 @@ publish-deb: ## Publish .deb packages to Aptly repository
 WEB_IMAGE  := $(REGISTRY)/cloudflare-log-collector-web
 WEB_TAG    ?= $(VERSION)
 
-GODOC_PKGS := cloudflare collector config lifecycle loki metrics telemetry
-
-web-godoc: ## Generate Go API reference markdown for the website
+web-godoc: ## Generate Go API reference markdown for the website (packages discovered dynamically)
 	@mkdir -p web/content/godoc
-	@for pkg in $(GODOC_PKGS); do \
+	@# Drop previously generated package pages so removed packages disappear; keep the section index.
+	@find web/content/godoc -maxdepth 1 -name '*.md' ! -name '_index.md' -delete 2>/dev/null || true
+	@for dir in $$(go list -f '{{.Dir}}' ./internal/...); do \
+		pkg=$$(basename "$$dir"); \
+		desc=$$(go list -f '{{.Doc}}' ./internal/$$pkg | sed 's/"/\\"/g'); \
 		echo "  godoc: internal/$$pkg"; \
-		printf -- '---\ntitle: "%s"\n---\n\n' "$$pkg" > web/content/godoc/$$pkg.md; \
+		printf -- '---\ntitle: "%s"\ndescription: "%s"\n---\n\n' "$$pkg" "$$desc" > web/content/godoc/$$pkg.md; \
 		gomarkdoc ./internal/$$pkg >> web/content/godoc/$$pkg.md; \
 		sed -i '/^# '"$$pkg"'$$/d' web/content/godoc/$$pkg.md; \
 	done

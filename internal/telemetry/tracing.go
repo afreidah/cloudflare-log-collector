@@ -8,6 +8,8 @@
 // creates a root span with Cloudflare API and Loki push child spans.
 // -------------------------------------------------------------------------------
 
+// Package telemetry wires OpenTelemetry tracing and trace-correlated structured
+// logging, including span helpers for Cloudflare and Loki operations.
 package telemetry
 
 import (
@@ -129,6 +131,6 @@ func StartClientSpan(ctx context.Context, name string, attrs ...attribute.KeyVal
 // -------------------------------------------------------------------------
 
 var (
-	AttrDataset   = attribute.Key("cflog.dataset")
+	AttrDataset    = attribute.Key("cflog.dataset")
 	AttrEventCount = attribute.Key("cflog.event_count")
 )

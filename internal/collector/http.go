@@ -23,7 +23,6 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 )
@@ -35,8 +34,8 @@ import (
 // HTTPCollector polls Cloudflare for HTTP traffic stats, updates Prometheus
 // gauges, and ships raw traffic data to Loki.
 type HTTPCollector struct {
-	cf           *cloudflare.Client
-	loki         *loki.Client
+	cf           httpQuerier
+	loki         logPusher
 	zoneID       string
 	zoneName     string
 	pollInterval time.Duration
@@ -87,7 +86,7 @@ func (c *HTTPCollector) Run(ctx context.Context) error {
 // poll executes a single HTTP traffic collection cycle within a traced span.
 func (c *HTTPCollector) poll(ctx context.Context) {
 	ctx, span := telemetry.StartSpan(ctx, "http.poll",
-		telemetry.AttrDataset.String("http"),
+		telemetry.AttrDataset.String(DatasetHTTP.String()),
 		attribute.String("cflog.zone", c.zoneName),
 	)
 	defer span.End()
@@ -100,14 +99,14 @@ func (c *HTTPCollector) poll(ctx context.Context) {
 		slog.ErrorContext(ctx, "HTTP traffic poll failed", "zone", c.zoneName, "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		metrics.PollTotal.WithLabelValues("http", c.zoneName, "error").Inc()
-		metrics.PollDuration.WithLabelValues("http", c.zoneName).Observe(time.Since(start).Seconds())
+		metrics.PollTotal.WithLabelValues(DatasetHTTP.String(), c.zoneName, "error").Inc()
+		metrics.PollDuration.WithLabelValues(DatasetHTTP.String(), c.zoneName).Observe(time.Since(start).Seconds())
 		return
 	}
 
-	metrics.PollTotal.WithLabelValues("http", c.zoneName, "success").Inc()
-	metrics.PollDuration.WithLabelValues("http", c.zoneName).Observe(time.Since(start).Seconds())
-	metrics.LastPollTimestamp.WithLabelValues("http", c.zoneName).Set(float64(time.Now().Unix()))
+	metrics.PollTotal.WithLabelValues(DatasetHTTP.String(), c.zoneName, "success").Inc()
+	metrics.PollDuration.WithLabelValues(DatasetHTTP.String(), c.zoneName).Observe(time.Since(start).Seconds())
+	metrics.LastPollTimestamp.WithLabelValues(DatasetHTTP.String(), c.zoneName).Set(float64(time.Now().Unix()))
 
 	span.SetAttributes(attribute.Int("cflog.group_count", len(groups)))
 
@@ -134,13 +133,12 @@ func (c *HTTPCollector) poll(ctx context.Context) {
 	c.lastSeen = until
 }
 
-// updateMetrics resets and repopulates Prometheus gauges from the latest poll data.
+// updateMetrics adds the latest poll window's counts to the cumulative HTTP
+// counters. Poll windows never overlap (the cursor advances by exclusive
+// datetime_gt), so adding each window's counts yields a correct running total
+// without resetting between polls - which keeps the series immune to poll-window
+// length and lets dashboards derive rates with rate()/increase().
 func (c *HTTPCollector) updateMetrics(groups []cloudflare.HTTPRequestGroup) {
-	// --- Reset only this zone's gauges before repopulating ---
-	metrics.HTTPRequests.DeletePartialMatch(prometheus.Labels{"zone": c.zoneName})
-	metrics.HTTPBytes.DeletePartialMatch(prometheus.Labels{"zone": c.zoneName})
-
-	// --- Aggregate totals across all groups ---
 	var totalEdgeBytes int64
 
 	for _, g := range groups {
@@ -148,12 +146,12 @@ func (c *HTTPCollector) updateMetrics(groups []cloudflare.HTTPRequestGroup) {
 		status := fmt.Sprintf("%d", g.Dimensions.EdgeResponseStatus)
 		country := g.Dimensions.ClientCountryName
 
-		metrics.HTTPRequests.WithLabelValues(method, status, country, c.zoneName).Add(float64(g.Count))
+		metrics.HTTPRequestsTotal.WithLabelValues(method, status, country, c.zoneName).Add(float64(g.Count))
 
 		totalEdgeBytes += g.Sum.EdgeResponseBytes
 	}
 
-	metrics.HTTPBytes.WithLabelValues("edge", c.zoneName).Set(float64(totalEdgeBytes))
+	metrics.HTTPBytesTotal.WithLabelValues("edge", c.zoneName).Add(float64(totalEdgeBytes))
 }
 
 // shipToLoki sends HTTP traffic groups to Loki as JSON log lines in batches.

@@ -11,6 +11,8 @@
 // status on the active trace span.
 // -------------------------------------------------------------------------------
 
+// Package cloudflare is a client for the Cloudflare GraphQL Analytics and REST
+// Audit Logs APIs, with query building, response parsing, and retry logic.
 package cloudflare
 
 import (
@@ -63,12 +65,21 @@ const (
 // CLIENT
 // -------------------------------------------------------------------------
 
+// httpDoer is the client's view of an HTTP transport: the single method it
+// calls on *http.Client. Declaring it here lets tests inject a fake to drive
+// transport-error paths the httptest server cannot easily produce, while the
+// real *http.Client satisfies it implicitly. See the Interface Design section
+// of docs/style-guide.md.
+type httpDoer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
 // Client talks to the Cloudflare GraphQL Analytics and REST Audit Logs APIs.
 type Client struct {
 	apiToken      string
 	endpoint      string
 	auditEndpoint string
-	httpClient    *http.Client
+	httpClient    httpDoer
 }
 
 // NewClient creates a Cloudflare API client.

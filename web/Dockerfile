@@ -5,14 +5,18 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
 RUN go install github.com/princjef/gomarkdoc/cmd/gomarkdoc@latest
+# Discover packages dynamically (identical to the Makefile's web-godoc target)
+# so the two generators can never drift out of sync.
 RUN mkdir -p /godoc && \
-    for pkg in cloudflare collector config lifecycle loki metrics telemetry; do \
-        printf -- '---\ntitle: "%s"\n---\n\n' "$pkg" > /godoc/$pkg.md && \
+    for dir in $(go list -f '{{.Dir}}' ./internal/...); do \
+        pkg=$(basename "$dir"); \
+        desc=$(go list -f '{{.Doc}}' ./internal/$pkg | sed 's/"/\\"/g'); \
+        printf -- '---\ntitle: "%s"\ndescription: "%s"\n---\n\n' "$pkg" "$desc" > /godoc/$pkg.md && \
         gomarkdoc ./internal/$pkg >> /godoc/$pkg.md && \
         sed -i '/^# '"$pkg"'$/d' /godoc/$pkg.md; \
     done
 
-FROM --platform=$BUILDPLATFORM hugomods/hugo:latest AS build
+FROM --platform=$BUILDPLATFORM hugomods/hugo:0.163.3 AS build
 WORKDIR /src/web
 COPY web/ /src/web/
 COPY README.md /src/README.md

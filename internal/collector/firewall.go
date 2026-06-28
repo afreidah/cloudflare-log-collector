@@ -9,6 +9,8 @@
 // Each poll cycle is wrapped in an OpenTelemetry span for trace correlation.
 // -------------------------------------------------------------------------------
 
+// Package collector runs the firewall, HTTP traffic, and audit log poll loops,
+// orchestrating Cloudflare queries, Prometheus metrics, and Loki shipping.
 package collector
 
 import (
@@ -31,9 +33,12 @@ import (
 // -------------------------------------------------------------------------
 
 // CollectorConfig holds the shared parameters for constructing a collector.
+// CF and Loki are consumer-declared interfaces, not concrete pointers, so the
+// composition root (main.go) passes the real clients while tests substitute
+// fakes. The concrete *cloudflare.Client and *loki.Client satisfy them.
 type CollectorConfig struct {
-	CF             *cloudflare.Client
-	Loki           *loki.Client
+	CF             cloudflareQuerier
+	Loki           logPusher
 	ZoneID         string
 	ZoneName       string
 	PollInterval   time.Duration
@@ -47,8 +52,8 @@ type CollectorConfig struct {
 
 // FirewallCollector polls Cloudflare for firewall events and ships them to Loki.
 type FirewallCollector struct {
-	cf           *cloudflare.Client
-	loki         *loki.Client
+	cf           firewallQuerier
+	loki         logPusher
 	zoneID       string
 	zoneName     string
 	pollInterval time.Duration
@@ -99,7 +104,7 @@ func (c *FirewallCollector) Run(ctx context.Context) error {
 // poll executes a single firewall event collection cycle within a traced span.
 func (c *FirewallCollector) poll(ctx context.Context) {
 	ctx, span := telemetry.StartSpan(ctx, "firewall.poll",
-		telemetry.AttrDataset.String("firewall"),
+		telemetry.AttrDataset.String(DatasetFirewall.String()),
 		attribute.String("cflog.zone", c.zoneName),
 	)
 	defer span.End()
@@ -112,14 +117,14 @@ func (c *FirewallCollector) poll(ctx context.Context) {
 		slog.ErrorContext(ctx, "Firewall poll failed", "zone", c.zoneName, "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		metrics.PollTotal.WithLabelValues("firewall", c.zoneName, "error").Inc()
-		metrics.PollDuration.WithLabelValues("firewall", c.zoneName).Observe(time.Since(start).Seconds())
+		metrics.PollTotal.WithLabelValues(DatasetFirewall.String(), c.zoneName, "error").Inc()
+		metrics.PollDuration.WithLabelValues(DatasetFirewall.String(), c.zoneName).Observe(time.Since(start).Seconds())
 		return
 	}
 
-	metrics.PollTotal.WithLabelValues("firewall", c.zoneName, "success").Inc()
-	metrics.PollDuration.WithLabelValues("firewall", c.zoneName).Observe(time.Since(start).Seconds())
-	metrics.LastPollTimestamp.WithLabelValues("firewall", c.zoneName).Set(float64(time.Now().Unix()))
+	metrics.PollTotal.WithLabelValues(DatasetFirewall.String(), c.zoneName, "success").Inc()
+	metrics.PollDuration.WithLabelValues(DatasetFirewall.String(), c.zoneName).Observe(time.Since(start).Seconds())
+	metrics.LastPollTimestamp.WithLabelValues(DatasetFirewall.String(), c.zoneName).Set(float64(time.Now().Unix()))
 
 	span.SetAttributes(attribute.Int("cflog.event_count", len(events)))
 
@@ -159,7 +164,7 @@ func (c *FirewallCollector) poll(ctx context.Context) {
 func (c *FirewallCollector) shipToLoki(ctx context.Context, events []cloudflare.FirewallEvent) error {
 	labels := map[string]string{
 		"job":  "cloudflare",
-		"type": "firewall",
+		"type": DatasetFirewall.String(),
 		"zone": c.zoneName,
 	}
 

@@ -76,37 +76,8 @@ func main() {
 
 	// --- Start background collectors with lifecycle manager ---
 	sm := lifecycle.NewManager()
-
-	for _, zone := range cfg.Cloudflare.Zones {
-		cc := collector.CollectorConfig{
-			CF:             cfClient,
-			Loki:           lokiClient,
-			ZoneID:         zone.ID,
-			ZoneName:       zone.Name,
-			PollInterval:   cfg.Cloudflare.PollInterval,
-			BackfillWindow: cfg.Cloudflare.BackfillWindow,
-			BatchSize:      cfg.Loki.BatchSize,
-		}
-
-		sm.Register(fmt.Sprintf("firewall-%s", zone.Name), collector.NewFirewallCollector(cc))
-		sm.Register(fmt.Sprintf("http-%s", zone.Name), collector.NewHTTPCollector(cc))
-	}
-
-	// --- Register audit log collectors if enabled ---
-	if cfg.Cloudflare.AuditLogs.Enabled {
-		for _, account := range cfg.Cloudflare.AuditLogs.Accounts {
-			ac := collector.AuditCollectorConfig{
-				CF:             cfClient,
-				Loki:           lokiClient,
-				AccountID:      account.ID,
-				AccountName:    account.Name,
-				PollInterval:   cfg.Cloudflare.PollInterval,
-				BackfillWindow: cfg.Cloudflare.BackfillWindow,
-				BatchSize:      cfg.Loki.BatchSize,
-			}
-
-			sm.Register(fmt.Sprintf("audit-%s", account.Name), collector.NewAuditCollector(ac))
-		}
+	for _, c := range plannedCollectors(cfg, cfClient, lokiClient) {
+		sm.Register(c.name, c.runner)
 	}
 
 	bgCtx, bgCancel := context.WithCancel(context.Background())
@@ -135,20 +106,7 @@ func main() {
 	}
 
 	// --- Log startup info ---
-	// --- Build zone name list for startup log ---
-	zoneNames := make([]string, len(cfg.Cloudflare.Zones))
-	for i, z := range cfg.Cloudflare.Zones {
-		zoneNames[i] = z.Name
-	}
-
-	// --- Build account name list for startup log ---
-	var accountNames []string
-	if cfg.Cloudflare.AuditLogs.Enabled {
-		accountNames = make([]string, len(cfg.Cloudflare.AuditLogs.Accounts))
-		for i, a := range cfg.Cloudflare.AuditLogs.Accounts {
-			accountNames[i] = a.Name
-		}
-	}
+	zoneNames, accountNames := collectorNames(cfg)
 
 	slog.Info("Cloudflare Log Collector starting",
 		"version", telemetry.Version,
@@ -208,4 +166,75 @@ func main() {
 
 	<-shutdownDone
 	slog.Info("Server stopped")
+}
+
+// namedRunner pairs a lifecycle registration name with the runner to supervise.
+type namedRunner struct {
+	name   string
+	runner lifecycle.Runner
+}
+
+// plannedCollectors builds the full ordered set of collector registrations from
+// config: a firewall and HTTP collector per zone, plus an audit collector per
+// account when audit logging is enabled. Keeping the plan a pure function of
+// config and clients lets tests assert the registration set without standing up
+// a lifecycle manager.
+func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Client) []namedRunner {
+	var planned []namedRunner
+
+	for _, zone := range cfg.Cloudflare.Zones {
+		cc := collector.CollectorConfig{
+			CF:             cf,
+			Loki:           lk,
+			ZoneID:         zone.ID,
+			ZoneName:       zone.Name,
+			PollInterval:   cfg.Cloudflare.PollInterval,
+			BackfillWindow: cfg.Cloudflare.BackfillWindow,
+			BatchSize:      cfg.Loki.BatchSize,
+		}
+
+		planned = append(planned,
+			namedRunner{fmt.Sprintf("%s-%s", collector.DatasetFirewall, zone.Name), collector.NewFirewallCollector(cc)},
+			namedRunner{fmt.Sprintf("%s-%s", collector.DatasetHTTP, zone.Name), collector.NewHTTPCollector(cc)},
+		)
+	}
+
+	if cfg.Cloudflare.AuditLogs.Enabled {
+		for _, account := range cfg.Cloudflare.AuditLogs.Accounts {
+			ac := collector.AuditCollectorConfig{
+				CF:             cf,
+				Loki:           lk,
+				AccountID:      account.ID,
+				AccountName:    account.Name,
+				PollInterval:   cfg.Cloudflare.PollInterval,
+				BackfillWindow: cfg.Cloudflare.BackfillWindow,
+				BatchSize:      cfg.Loki.BatchSize,
+			}
+
+			planned = append(planned, namedRunner{
+				name:   fmt.Sprintf("%s-%s", collector.DatasetAudit, account.Name),
+				runner: collector.NewAuditCollector(ac),
+			})
+		}
+	}
+
+	return planned
+}
+
+// collectorNames returns the configured zone names and, when audit logging is
+// enabled, the account names. Used to populate the startup log line.
+func collectorNames(cfg *config.Config) (zones, accounts []string) {
+	zones = make([]string, len(cfg.Cloudflare.Zones))
+	for i, z := range cfg.Cloudflare.Zones {
+		zones[i] = z.Name
+	}
+
+	if cfg.Cloudflare.AuditLogs.Enabled {
+		accounts = make([]string, len(cfg.Cloudflare.AuditLogs.Accounts))
+		for i, a := range cfg.Cloudflare.AuditLogs.Accounts {
+			accounts[i] = a.Name
+		}
+	}
+
+	return zones, accounts
 }
