@@ -28,7 +28,7 @@ COPY cmd/ cmd/
 COPY internal/ internal/
 
 # --- Build binary (native cross-compilation, no QEMU needed) ---
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build \
     -ldflags="-s -w -X github.com/afreidah/cloudflare-log-collector/internal/telemetry.Version=${VERSION}" \
     -o cloudflare-log-collector ./cmd/cloudflare-log-collector
 
