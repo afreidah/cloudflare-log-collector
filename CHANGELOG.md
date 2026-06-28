@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.18](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.17...v0.1.18) (2026-06-28)
+
+
+### Features
+
+* add RUM / Web Analytics collector (page views + Core Web Vitals) ([#51](https://github.com/afreidah/cloudflare-log-collector/issues/51)) ([e29a9b9](https://github.com/afreidah/cloudflare-log-collector/commit/e29a9b9ec2c0d525b9f73d9dd2533558205eb045))
+
 ## [0.1.17](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.16...v0.1.17) (2026-06-23)
 
 
