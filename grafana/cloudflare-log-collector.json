@@ -763,7 +763,7 @@
       "type": "logs",
       "id": 41,
       "title": "Service Logs (collector process)",
-      "description": "Stdout from the collector itself — poll results, errors, startup info. Click trace IDs to jump to Tempo.",
+      "description": "Stdout from the collector itself - poll results, errors, startup info. Click trace IDs to jump to Tempo.",
       "gridPos": { "x": 0, "y": 47, "w": 24, "h": 10 },
       "datasource": { "type": "loki", "uid": "loki" },
       "targets": [

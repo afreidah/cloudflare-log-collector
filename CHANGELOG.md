@@ -88,7 +88,7 @@ All notable changes to this project are documented in this file.
 - updated image
 
 ### Other
-- setting up release functionality for repo to match other go projects … (#8)
+- setting up release functionality for repo to match other go projects ... (#8)
 - setting up release functionality for repo to match other go projects I have
 - dashboard fix
 - Feat: added grafana dashboard and some code changes to make the dashboardd better.  put an image of it on the readme

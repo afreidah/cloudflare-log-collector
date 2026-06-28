@@ -39,7 +39,7 @@ A lightweight Go service that polls the Cloudflare GraphQL Analytics API for fir
 - **Firewall events** are pushed to Loki as structured JSON log lines for querying in Grafana
 - **HTTP traffic stats** are exposed as Prometheus gauges and also pushed to Loki for raw detail
 - **Every poll cycle** gets its own OpenTelemetry trace with child spans, exported to Tempo via OTLP gRPC
-- **Log-trace correlation** is automatic — `trace_id` and `span_id` are injected into every structured log line
+- **Log-trace correlation** is automatic - `trace_id` and `span_id` are injected into every structured log line
 
 </div>
 

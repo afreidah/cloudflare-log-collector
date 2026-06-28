@@ -7,7 +7,7 @@
 // that the concrete *cloudflare.Client and *loki.Client still satisfy the narrow
 // interfaces, so a signature drift in either client breaks the build here rather
 // than at the call site. Second, runtime tests driving each collector's poll
-// through lightweight in-memory fakes — exercising the seam the interfaces exist
+// through lightweight in-memory fakes - exercising the seam the interfaces exist
 // to create, with no httptest server in sight.
 // -------------------------------------------------------------------------------
 

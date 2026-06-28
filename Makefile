@@ -15,6 +15,7 @@ IMAGE      := cloudflare-log-collector
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 FULL_TAG   := $(REGISTRY)/$(IMAGE):$(VERSION)
+LATEST_TAG := $(REGISTRY)/$(IMAGE):latest
 CACHE_TAG  := $(REGISTRY)/$(IMAGE):cache
 PLATFORMS  := linux/amd64,linux/arm64
 
@@ -62,13 +63,14 @@ docker: ## Build Docker image for local architecture
 # BUILD AND PUSH (MULTI-ARCH)
 # -------------------------------------------------------------------------
 
-push: builder ## Build and push multi-arch images to registry
-	@echo "Building and pushing $(FULL_TAG) for $(PLATFORMS)"
+push: builder ## Build and push multi-arch images to registry (tags $(VERSION) and latest)
+	@echo "Building and pushing $(FULL_TAG) and $(LATEST_TAG) for $(PLATFORMS)"
 	docker buildx build \
 	  --pull \
 	  --platform $(PLATFORMS) \
 	  --build-arg VERSION=$(VERSION) \
 	  -t $(FULL_TAG) \
+	  -t $(LATEST_TAG) \
 	  --cache-from type=registry,ref=$(CACHE_TAG) \
 	  --cache-to type=registry,ref=$(CACHE_TAG),mode=max \
 	  --output type=image,push=true \
@@ -185,12 +187,13 @@ web-build: web-godoc ## Build the project website
 web-docker: ## Build website Docker image for local architecture
 	docker build --pull -f web/Dockerfile -t $(WEB_IMAGE):$(WEB_TAG) .
 
-web-push: builder ## Build and push multi-arch website image to registry
+web-push: builder ## Build and push multi-arch website image to registry (tags $(WEB_TAG) and latest)
 	docker buildx build \
 	  --pull \
 	  --platform $(PLATFORMS) \
 	  -f web/Dockerfile \
 	  -t $(WEB_IMAGE):$(WEB_TAG) \
+	  -t $(WEB_IMAGE):latest \
 	  --output type=image,push=true \
 	  .
 
