@@ -7,6 +7,8 @@
 // syntax. Validates required fields and applies defaults for optional settings.
 // -------------------------------------------------------------------------------
 
+// Package config loads the YAML configuration with environment-variable
+// expansion, validates required fields, and applies defaults.
 package config
 
 import (

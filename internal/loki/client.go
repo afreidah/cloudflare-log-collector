@@ -9,6 +9,8 @@
 // cluster's Loki instance.
 // -------------------------------------------------------------------------------
 
+// Package loki is a client for the Loki push API, with batching, retry, and
+// multi-tenant support.
 package loki
 
 import (
@@ -42,11 +44,20 @@ const (
 // CLIENT
 // -------------------------------------------------------------------------
 
+// httpDoer is the client's view of an HTTP transport: the single method it
+// calls on *http.Client. Declaring it here lets tests inject a fake to drive
+// transport-error paths the httptest server cannot easily produce, while the
+// real *http.Client satisfies it implicitly. See the Interface Design section
+// of docs/style-guide.md.
+type httpDoer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
 // Client pushes log entries to the Loki HTTP API.
 type Client struct {
 	endpoint   string
 	tenantID   string
-	httpClient *http.Client
+	httpClient httpDoer
 }
 
 // NewClient creates a Loki push API client.

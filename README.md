@@ -18,7 +18,7 @@ A lightweight Go service that polls the Cloudflare GraphQL Analytics API for fir
 - **Firewall events** are pushed to Loki as structured JSON log lines for querying in Grafana
 - **HTTP traffic stats** are exposed as Prometheus gauges (by method, status, and country) and also pushed to Loki for raw detail
 - **Every poll cycle** gets its own OpenTelemetry trace with child spans for API calls and Loki pushes, exported to Tempo via OTLP gRPC
-- **Log-trace correlation** is automatic — `trace_id` and `span_id` are injected into every structured log line via a custom slog handler, enabling one-click navigation between Loki logs and Tempo traces in Grafana
+- **Log-trace correlation** is automatic - `trace_id` and `span_id` are injected into every structured log line via a custom slog handler, enabling one-click navigation between Loki logs and Tempo traces in Grafana
 
 ```
          Cloudflare GraphQL API
@@ -137,9 +137,9 @@ logging:
 
 The API token requires the following permissions:
 
-- **Account Analytics** — Read (for zone analytics)
-- **Zone Analytics** — Read (for zone analytics)
-- **Account Settings** — Read (required for audit logs)
+- **Account Analytics** - Read (for zone analytics)
+- **Zone Analytics** - Read (for zone analytics)
+- **Account Settings** - Read (required for audit logs)
 
 Create one at [Cloudflare Dashboard > API Tokens](https://dash.cloudflare.com/profile/api-tokens).
 
@@ -206,57 +206,57 @@ make clean                  # remove build artifacts
 ## Project Structure
 
 ```
-├── .goreleaser.yaml                  # GoReleaser release configuration
-├── release-please-config.json        # release-please configuration
-├── .release-please-manifest.json     # release-please version manifest
-├── Dockerfile                        # Multi-stage Alpine build
-├── Makefile                          # Build, test, push targets
-├── cmd/
-│   └── cloudflare-log-collector/
-│       └── main.go                   # Entry point, config, signal handling
-├── internal/
-│   ├── cloudflare/
-│   │   ├── client.go                 # GraphQL API client, query builders
-│   │   └── client_test.go
-│   ├── collector/
-│   │   ├── audit.go                  # Audit log poller, Loki shipper
-│   │   ├── audit_test.go
-│   │   ├── firewall.go               # Firewall event poller, Loki shipper
-│   │   ├── firewall_test.go
-│   │   ├── http.go                   # HTTP traffic poller, metrics + Loki
-│   │   └── http_test.go
-│   ├── config/
-│   │   ├── config.go                 # YAML config with env var expansion
-│   │   └── config_test.go
-│   ├── lifecycle/
-│   │   ├── manager.go                # Background service lifecycle
-│   │   └── manager_test.go
-│   ├── loki/
-│   │   ├── client.go                 # Loki push API client
-│   │   └── client_test.go
-│   ├── metrics/
-│   │   └── metrics.go                # Prometheus metric definitions
-│   └── telemetry/
-│       ├── tracing.go                # OTel tracer init, span helpers
-│       ├── tracehandler.go           # slog handler for trace correlation
-│       └── tracehandler_test.go
-├── web/
-│   ├── hugo.toml                     # Hugo site configuration
-│   ├── Dockerfile                    # Multi-stage Hugo + nginx build
-│   ├── content/                      # Site content (Markdown)
-│   ├── layouts/                      # Custom templates and shortcodes
-│   ├── assets/css/                   # Custom theme variant
-│   └── themes/hugo-theme-relearn/    # Documentation theme (submodule)
-├── packaging/
-│   ├── cloudflare-log-collector.service  # Systemd unit file
-│   ├── config.example.yaml           # Example configuration
-│   ├── postinst, prerm, postrm       # Debian package scripts
-│   ├── copyright                     # License for Debian packaging
-│   └── changelog                     # Release notes for Debian packaging
-└── docs/
-    ├── images/
-    │   └── grafana.png               # Grafana dashboard screenshot
-    └── style-guide.md                # Code style conventions
+|-- .goreleaser.yaml                  # GoReleaser release configuration
+|-- release-please-config.json        # release-please configuration
+|-- .release-please-manifest.json     # release-please version manifest
+|-- Dockerfile                        # Multi-stage Alpine build
+|-- Makefile                          # Build, test, push targets
+|-- cmd/
+|   `-- cloudflare-log-collector/
+|       `-- main.go                   # Entry point, config, signal handling
+|-- internal/
+|   |-- cloudflare/
+|   |   |-- client.go                 # GraphQL API client, query builders
+|   |   `-- client_test.go
+|   |-- collector/
+|   |   |-- audit.go                  # Audit log poller, Loki shipper
+|   |   |-- audit_test.go
+|   |   |-- firewall.go               # Firewall event poller, Loki shipper
+|   |   |-- firewall_test.go
+|   |   |-- http.go                   # HTTP traffic poller, metrics + Loki
+|   |   `-- http_test.go
+|   |-- config/
+|   |   |-- config.go                 # YAML config with env var expansion
+|   |   `-- config_test.go
+|   |-- lifecycle/
+|   |   |-- manager.go                # Background service lifecycle
+|   |   `-- manager_test.go
+|   |-- loki/
+|   |   |-- client.go                 # Loki push API client
+|   |   `-- client_test.go
+|   |-- metrics/
+|   |   `-- metrics.go                # Prometheus metric definitions
+|   `-- telemetry/
+|       |-- tracing.go                # OTel tracer init, span helpers
+|       |-- tracehandler.go           # slog handler for trace correlation
+|       `-- tracehandler_test.go
+|-- web/
+|   |-- hugo.toml                     # Hugo site configuration
+|   |-- Dockerfile                    # Multi-stage Hugo + nginx build
+|   |-- content/                      # Site content (Markdown)
+|   |-- layouts/                      # Custom templates and shortcodes
+|   |-- assets/css/                   # Custom theme variant
+|   `-- themes/hugo-theme-relearn/    # Documentation theme (submodule)
+|-- packaging/
+|   |-- cloudflare-log-collector.service  # Systemd unit file
+|   |-- config.example.yaml           # Example configuration
+|   |-- postinst, prerm, postrm       # Debian package scripts
+|   |-- copyright                     # License for Debian packaging
+|   `-- changelog                     # Release notes for Debian packaging
+`-- docs/
+    |-- images/
+    |   `-- grafana.png               # Grafana dashboard screenshot
+    `-- style-guide.md                # Code style conventions
 ```
 
 ## Rate Limits and Retry

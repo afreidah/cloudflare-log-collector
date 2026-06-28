@@ -4,8 +4,9 @@
 // Author: Alex Freidah
 //
 // Tests for the HTTP traffic collector's metric update and Loki shipping logic.
-// Uses mock Cloudflare response data to verify Prometheus gauge population with
-// country labels and structured JSON log entry generation for Loki.
+// Uses mock Cloudflare response data to verify cumulative Prometheus counter
+// population with country labels and structured JSON log entry generation for
+// Loki.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -53,6 +54,10 @@ func TestUpdateMetrics_CountryLabel(t *testing.T) {
 	lokiClient := loki.NewClient(ts.URL, "fake")
 	c := NewHTTPCollector(httpTestConfig(lokiClient, 100))
 
+	// Counters are process-global; reset so this test asserts absolute values.
+	metrics.HTTPRequestsTotal.Reset()
+	metrics.HTTPBytesTotal.Reset()
+
 	groups := []cloudflare.HTTPRequestGroup{
 		{
 			Count: 10,
@@ -78,19 +83,19 @@ func TestUpdateMetrics_CountryLabel(t *testing.T) {
 
 	c.updateMetrics(groups)
 
-	// --- Verify country label on HTTP requests gauge ---
-	usGauge := metrics.HTTPRequests.WithLabelValues("GET", "200", "US", "example.com")
-	assertGaugeValue(t, usGauge, 10)
+	// --- Verify country label on HTTP requests counter ---
+	usCounter := metrics.HTTPRequestsTotal.WithLabelValues("GET", "200", "US", "example.com")
+	assertCounterValue(t, usCounter, 10)
 
-	deGauge := metrics.HTTPRequests.WithLabelValues("POST", "201", "DE", "example.com")
-	assertGaugeValue(t, deGauge, 5)
+	deCounter := metrics.HTTPRequestsTotal.WithLabelValues("POST", "201", "DE", "example.com")
+	assertCounterValue(t, deCounter, 5)
 
 	// --- Verify edge bytes ---
-	edgeGauge := metrics.HTTPBytes.WithLabelValues("edge", "example.com")
-	assertGaugeValue(t, edgeGauge, 1536)
+	edgeCounter := metrics.HTTPBytesTotal.WithLabelValues("edge", "example.com")
+	assertCounterValue(t, edgeCounter, 1536)
 }
 
-func TestUpdateMetrics_ResetsOnEachCall(t *testing.T) {
+func TestUpdateMetrics_AccumulatesAcrossCalls(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -99,37 +104,34 @@ func TestUpdateMetrics_ResetsOnEachCall(t *testing.T) {
 	lokiClient := loki.NewClient(ts.URL, "fake")
 	c := NewHTTPCollector(httpTestConfig(lokiClient, 100))
 
-	// --- First call ---
-	c.updateMetrics([]cloudflare.HTTPRequestGroup{
-		{
-			Count: 100,
+	metrics.HTTPRequestsTotal.Reset()
+	metrics.HTTPBytesTotal.Reset()
+
+	group := func(count int, bytes int64) cloudflare.HTTPRequestGroup {
+		return cloudflare.HTTPRequestGroup{
+			Count: count,
 			Dimensions: cloudflare.HTTPRequestDimensions{
 				ClientRequestHTTPMethodName: "GET",
 				EdgeResponseStatus:          200,
 				ClientCountryName:           "US",
 			},
-			Sum: cloudflare.HTTPRequestSum{EdgeResponseBytes: 5000},
-		},
-	})
+			Sum: cloudflare.HTTPRequestSum{EdgeResponseBytes: bytes},
+		}
+	}
 
-	// --- Second call with different data should reset ---
-	c.updateMetrics([]cloudflare.HTTPRequestGroup{
-		{
-			Count: 3,
-			Dimensions: cloudflare.HTTPRequestDimensions{
-				ClientRequestHTTPMethodName: "GET",
-				EdgeResponseStatus:          200,
-				ClientCountryName:           "US",
-			},
-			Sum: cloudflare.HTTPRequestSum{EdgeResponseBytes: 100},
-		},
-	})
+	// --- First poll window ---
+	c.updateMetrics([]cloudflare.HTTPRequestGroup{group(100, 5000)})
 
-	gauge := metrics.HTTPRequests.WithLabelValues("GET", "200", "US", "example.com")
-	assertGaugeValue(t, gauge, 3)
+	reqCounter := metrics.HTTPRequestsTotal.WithLabelValues("GET", "200", "US", "example.com")
+	edgeCounter := metrics.HTTPBytesTotal.WithLabelValues("edge", "example.com")
+	assertCounterValue(t, reqCounter, 100)
+	assertCounterValue(t, edgeCounter, 5000)
 
-	edgeGauge := metrics.HTTPBytes.WithLabelValues("edge", "example.com")
-	assertGaugeValue(t, edgeGauge, 100)
+	// --- Second poll window accumulates onto the first (windows never overlap) ---
+	c.updateMetrics([]cloudflare.HTTPRequestGroup{group(3, 100)})
+
+	assertCounterValue(t, reqCounter, 103)
+	assertCounterValue(t, edgeCounter, 5100)
 }
 
 // -------------------------------------------------------------------------
@@ -299,17 +301,17 @@ func TestShipToLoki_ServerError(t *testing.T) {
 // HELPERS
 // -------------------------------------------------------------------------
 
-// assertGaugeValue reads the current value of a Prometheus gauge and asserts
+// assertCounterValue reads the current value of a Prometheus counter and asserts
 // it matches the expected value.
-func assertGaugeValue(t *testing.T, gauge prometheus.Gauge, expected float64) {
+func assertCounterValue(t *testing.T, counter prometheus.Counter, expected float64) {
 	t.Helper()
 
 	var m io_prometheus.Metric
-	if err := gauge.Write(&m); err != nil {
-		t.Fatalf("failed to read gauge: %v", err)
+	if err := counter.Write(&m); err != nil {
+		t.Fatalf("failed to read counter: %v", err)
 	}
 
-	if m.Gauge.GetValue() != expected {
-		t.Errorf("gauge value = %v, want %v", m.Gauge.GetValue(), expected)
+	if m.Counter.GetValue() != expected {
+		t.Errorf("counter value = %v, want %v", m.Counter.GetValue(), expected)
 	}
 }

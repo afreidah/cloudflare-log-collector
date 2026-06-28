@@ -32,9 +32,12 @@ import (
 // -------------------------------------------------------------------------
 
 // AuditCollectorConfig holds the parameters for constructing an audit collector.
+// CF and Loki are consumer-declared interfaces, not concrete pointers, so the
+// composition root (main.go) passes the real clients while tests substitute
+// fakes. The concrete *cloudflare.Client and *loki.Client satisfy them.
 type AuditCollectorConfig struct {
-	CF             *cloudflare.Client
-	Loki           *loki.Client
+	CF             auditQuerier
+	Loki           logPusher
 	AccountID      string
 	AccountName    string
 	PollInterval   time.Duration
@@ -48,8 +51,8 @@ type AuditCollectorConfig struct {
 
 // AuditCollector polls Cloudflare for account audit logs and ships them to Loki.
 type AuditCollector struct {
-	cf           *cloudflare.Client
-	loki         *loki.Client
+	cf           auditQuerier
+	loki         logPusher
 	accountID    string
 	accountName  string
 	pollInterval time.Duration
@@ -105,7 +108,7 @@ func (c *AuditCollector) Run(ctx context.Context) error {
 // poll executes a single audit log collection cycle within a traced span.
 func (c *AuditCollector) poll(ctx context.Context) {
 	ctx, span := telemetry.StartSpan(ctx, "audit.poll",
-		telemetry.AttrDataset.String("audit"),
+		telemetry.AttrDataset.String(DatasetAudit.String()),
 		attribute.String("cflog.account", c.accountName),
 	)
 	defer span.End()
@@ -118,14 +121,14 @@ func (c *AuditCollector) poll(ctx context.Context) {
 		slog.ErrorContext(ctx, "Audit poll failed", "account", c.accountName, "error", err)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		metrics.PollTotal.WithLabelValues("audit", c.accountName, "error").Inc()
-		metrics.PollDuration.WithLabelValues("audit", c.accountName).Observe(time.Since(start).Seconds())
+		metrics.PollTotal.WithLabelValues(DatasetAudit.String(), c.accountName, "error").Inc()
+		metrics.PollDuration.WithLabelValues(DatasetAudit.String(), c.accountName).Observe(time.Since(start).Seconds())
 		return
 	}
 
-	metrics.PollTotal.WithLabelValues("audit", c.accountName, "success").Inc()
-	metrics.PollDuration.WithLabelValues("audit", c.accountName).Observe(time.Since(start).Seconds())
-	metrics.LastPollTimestamp.WithLabelValues("audit", c.accountName).Set(float64(time.Now().Unix()))
+	metrics.PollTotal.WithLabelValues(DatasetAudit.String(), c.accountName, "success").Inc()
+	metrics.PollDuration.WithLabelValues(DatasetAudit.String(), c.accountName).Observe(time.Since(start).Seconds())
+	metrics.LastPollTimestamp.WithLabelValues(DatasetAudit.String(), c.accountName).Set(float64(time.Now().Unix()))
 
 	// Drop events already shipped at the previous cursor boundary.
 	events = c.dropAlreadyShipped(events)
@@ -206,7 +209,7 @@ func boundaryIDs(events []cloudflare.AuditLogEvent, boundary string) map[string]
 func (c *AuditCollector) shipToLoki(ctx context.Context, events []cloudflare.AuditLogEvent) error {
 	labels := map[string]string{
 		"job":     "cloudflare",
-		"type":    "audit",
+		"type":    DatasetAudit.String(),
 		"account": c.accountName,
 	}
 

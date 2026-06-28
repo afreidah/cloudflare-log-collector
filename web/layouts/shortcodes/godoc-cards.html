@@ -1,0 +1,15 @@
+{{/* Renders one landing card per generated godoc package page. The card set and
+     its descriptions come straight from the per-package pages (their title and
+     frontmatter `description`, which web-godoc fills from the Go package
+     synopsis), so adding or removing a Go package changes the cards
+     automatically with no edit here or in _index.md. */}}
+<div class="landing-grid">
+{{- range .Page.Pages.ByTitle }}
+  <a class="landing-card" href="{{ .RelPermalink }}">
+    <div>
+      <strong>{{ .Title }}</strong>
+      <p>{{ with .Params.description }}{{ . }}{{ else }}{{ .Summary }}{{ end }}</p>
+    </div>
+  </a>
+{{- end }}
+</div>
