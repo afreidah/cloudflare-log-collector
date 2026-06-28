@@ -25,7 +25,13 @@ COPY --from=godoc /godoc/ /src/web/content/godoc/
 COPY web/content/godoc/_index.md /src/web/content/godoc/_index.md
 RUN hugo --minify
 
-FROM nginx:alpine
+# Serve the static site with the unprivileged nginx image: it runs as a non-root
+# user (UID 101) and listens on 8080, which satisfies docker:S6471. apk upgrade
+# needs root, so switch to root only for that step, then drop back to 101. NOTE:
+# the fronting proxy/service must target 8080 instead of 80.
+FROM nginxinc/nginx-unprivileged:alpine
+USER root
 RUN apk upgrade --no-cache
+USER 101
 COPY --from=build /src/web/public /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 8080
