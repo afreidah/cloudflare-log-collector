@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.19](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.18...v0.1.19) (2026-06-28)
+
+
+### Bug Fixes
+
+* **ci:** resolve SonarCloud Dockerfile and workflow findings ([#53](https://github.com/afreidah/cloudflare-log-collector/issues/53)) ([ef43092](https://github.com/afreidah/cloudflare-log-collector/commit/ef43092c70f3f0f734ed977d57a3657f0265a069))
+
 ## [0.1.18](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.17...v0.1.18) (2026-06-28)
 
 
