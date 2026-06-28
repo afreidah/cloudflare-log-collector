@@ -16,12 +16,10 @@ package collector
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"time"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
-	"github.com/afreidah/cloudflare-log-collector/internal/loki"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
 
@@ -211,31 +209,7 @@ func (c *RUMCollector) shipPageloads(ctx context.Context, groups []cloudflare.RU
 		"site": c.siteName,
 	}
 
-	// --- Use current time for Loki entry timestamps to avoid rejection by
-	// Loki's reject_old_samples_max_age. The aggregation window is implicit in
-	// the poll interval. ---
-	now := time.Now().UTC()
-	entries := make([]loki.Entry, 0, len(groups))
-	for i := range groups {
-		line, err := json.Marshal(&groups[i])
-		if err != nil {
-			slog.WarnContext(ctx, "Failed to marshal RUM page load", "site", c.siteName, "error", err)
-			continue
-		}
-
-		entries = append(entries, loki.NewEntry(now, string(line)))
-	}
-
-	// --- Send in batches ---
-	for i := 0; i < len(entries); i += c.batchSize {
-		end := min(i+c.batchSize, len(entries))
-
-		if err := c.loki.Push(ctx, labels, entries[i:end]); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return shipJSON(ctx, c.loki, c.batchSize, labels, groups, "Failed to marshal RUM page load", "site", c.siteName)
 }
 
 // -------------------------------------------------------------------------

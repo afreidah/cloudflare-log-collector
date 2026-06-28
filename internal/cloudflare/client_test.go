@@ -486,63 +486,8 @@ func TestNewTestClient(t *testing.T) {
 	}
 }
 
-// -------------------------------------------------------------------------
-// RETRY LOGIC
-// -------------------------------------------------------------------------
-
-func TestRetryDelay_DefaultBackoff(t *testing.T) {
-	header := http.Header{}
-
-	d0 := retryDelay(header, 0)
-	d1 := retryDelay(header, 1)
-	d2 := retryDelay(header, 2)
-
-	if d0 != retryBaseDelay {
-		t.Errorf("attempt 0: got %v, want %v", d0, retryBaseDelay)
-	}
-	if d1 != 2*retryBaseDelay {
-		t.Errorf("attempt 1: got %v, want %v", d1, 2*retryBaseDelay)
-	}
-	if d2 != 4*retryBaseDelay {
-		t.Errorf("attempt 2: got %v, want %v", d2, 4*retryBaseDelay)
-	}
-}
-
-func TestRetryDelay_RetryAfterHeader(t *testing.T) {
-	header := http.Header{}
-	header.Set("Retry-After", "10")
-
-	d := retryDelay(header, 0)
-	if d != 10*time.Second {
-		t.Errorf("got %v, want 10s (from Retry-After header)", d)
-	}
-}
-
-func TestRetryDelay_InvalidRetryAfterFallsBack(t *testing.T) {
-	header := http.Header{}
-	header.Set("Retry-After", "not-a-number")
-
-	d := retryDelay(header, 1)
-	if d != 2*retryBaseDelay {
-		t.Errorf("got %v, want %v (fallback to exponential)", d, 2*retryBaseDelay)
-	}
-}
-
-func TestIsRetryable(t *testing.T) {
-	retryable := []int{429, 502, 503, 504}
-	for _, code := range retryable {
-		if !isRetryable(code) {
-			t.Errorf("status %d should be retryable", code)
-		}
-	}
-
-	notRetryable := []int{200, 201, 400, 401, 403, 404, 500}
-	for _, code := range notRetryable {
-		if isRetryable(code) {
-			t.Errorf("status %d should not be retryable", code)
-		}
-	}
-}
+// Retry policy (isRetryable, backoff, Retry-After) is shared and tested in
+// internal/retry.
 
 // -------------------------------------------------------------------------
 // HELPERS

@@ -13,13 +13,11 @@ package collector
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
-	"github.com/afreidah/cloudflare-log-collector/internal/loki"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
 
@@ -162,29 +160,5 @@ func (c *HTTPCollector) shipToLoki(ctx context.Context, groups []cloudflare.HTTP
 		"zone": c.zoneName,
 	}
 
-	// --- Use current time for Loki entry timestamps to avoid rejection by
-	// Loki's reject_old_samples_max_age. The original event timestamp is
-	// preserved in the JSON log line body for querying. ---
-	now := time.Now().UTC()
-	entries := make([]loki.Entry, 0, len(groups))
-	for _, g := range groups {
-		line, err := json.Marshal(g)
-		if err != nil {
-			slog.WarnContext(ctx, "Failed to marshal HTTP traffic group", "error", err)
-			continue
-		}
-
-		entries = append(entries, loki.NewEntry(now, string(line)))
-	}
-
-	// --- Send in batches ---
-	for i := 0; i < len(entries); i += c.batchSize {
-		end := min(i+c.batchSize, len(entries))
-
-		if err := c.loki.Push(ctx, labels, entries[i:end]); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return shipJSON(ctx, c.loki, c.batchSize, labels, groups, "Failed to marshal HTTP traffic group")
 }
