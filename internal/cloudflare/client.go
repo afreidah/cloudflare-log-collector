@@ -21,8 +21,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
+
+	"github.com/afreidah/cloudflare-log-collector/internal/retry"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -35,13 +36,6 @@ const (
 	// maxResponseBytes caps the size of response bodies read from the API to
 	// guard against unbounded memory allocation.
 	maxResponseBytes = 10 << 20 // 10 MB
-
-	// maxRetries is the number of additional attempts after the initial request
-	// for retryable HTTP status codes (429, 502, 503, 504).
-	maxRetries = 3
-
-	// retryBaseDelay is the initial backoff duration before the first retry.
-	retryBaseDelay = 1 * time.Second
 )
 
 // -------------------------------------------------------------------------
@@ -100,7 +94,7 @@ func (c *Client) doWithRetry(ctx context.Context, buildReq func() (*http.Request
 	var respBody []byte
 	var statusCode int
 
-	for attempt := range maxRetries + 1 {
+	for attempt := range retry.MaxRetries + 1 {
 		req, err := buildReq()
 		if err != nil {
 			return nil, 0, fmt.Errorf("create request: %w", err)
@@ -119,11 +113,11 @@ func (c *Client) doWithRetry(ctx context.Context, buildReq func() (*http.Request
 
 		statusCode = resp.StatusCode
 
-		if !isRetryable(statusCode) || attempt == maxRetries {
+		if !retry.IsRetryable(statusCode) || attempt == retry.MaxRetries {
 			break
 		}
 
-		delay := retryDelay(resp.Header, attempt)
+		delay := retry.Delay(resp.Header, attempt)
 		slog.WarnContext(ctx, "Cloudflare API returned retryable status, backing off",
 			"status", statusCode, "attempt", attempt+1, "delay", delay)
 
@@ -139,28 +133,4 @@ func (c *Client) doWithRetry(ctx context.Context, buildReq func() (*http.Request
 	trace.SpanFromContext(ctx).SetAttributes(attribute.Int("http.status_code", statusCode))
 
 	return respBody, statusCode, nil
-}
-
-// isRetryable returns true for HTTP status codes that warrant a retry.
-func isRetryable(statusCode int) bool {
-	switch statusCode {
-	case http.StatusTooManyRequests,
-		http.StatusBadGateway,
-		http.StatusServiceUnavailable,
-		http.StatusGatewayTimeout:
-		return true
-	default:
-		return false
-	}
-}
-
-// retryDelay computes the backoff duration for the given attempt, honoring
-// the Retry-After header if present.
-func retryDelay(header http.Header, attempt int) time.Duration {
-	if ra := header.Get("Retry-After"); ra != "" {
-		if secs, err := strconv.Atoi(ra); err == nil && secs > 0 {
-			return time.Duration(secs) * time.Second
-		}
-	}
-	return retryBaseDelay * (1 << attempt)
 }
