@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.20](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.19...v0.1.20) (2026-06-28)
+
+
+### Bug Fixes
+
+* **ci:** lock govulncheck via go.mod tool dependency (S8545) ([#57](https://github.com/afreidah/cloudflare-log-collector/issues/57)) ([210989d](https://github.com/afreidah/cloudflare-log-collector/commit/210989d09dfcc313054b9576ca6c3799fa026bd8))
+
 ## [0.1.19](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.18...v0.1.19) (2026-06-28)
 
 
