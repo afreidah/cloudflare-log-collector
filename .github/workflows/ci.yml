@@ -112,8 +112,13 @@ jobs:
   # Runs unconditionally (not gated on Go changes) and generates its own
   # coverage, so non-Go fixes - Dockerfile, this workflow, sonar-project.properties
   # - get re-analyzed and their findings clear instead of lingering as stale.
+  #
+  # Skipped for Dependabot PRs: they run with a restricted token that cannot
+  # read the SONAR_TOKEN secret, so the scan can only fail on auth. A job-level
+  # skip reports as a passing required check, unlike a hard failure.
   # ---------------------------------------------------------------------------
   sonarqube:
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
