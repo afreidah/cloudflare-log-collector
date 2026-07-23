@@ -209,9 +209,13 @@ pre.mermaid {
   border: none !important;
 }
 
-/* Hide the top bar and search */
-#R-topbar {
-  display: none;
+/* Hide the top bar on wide screens where the sidebar is always visible.
+   On narrow screens the sidebar collapses off-canvas and the topbar holds
+   the hamburger nav toggle, so it must stay visible there. */
+@media screen and (min-width: 60rem) {
+  #R-topbar {
+    display: none;
+  }
 }
 
 #R-searchresults,
@@ -392,4 +396,42 @@ a.landing-card:hover p {
 .btn.cstyle.button.primary a:hover {
   background-color: #0e3a5e !important;
   color: #7dd3fc !important;
+}
+
+/* Responsive layout for narrow screens */
+@media screen and (max-width: 47.999rem) {
+  /* Collapse two-column card grids to a single column */
+  .feature-grid,
+  .landing-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Scale the hero title down so it fits the viewport */
+  #R-body h1 {
+    font-size: 1.75rem !important;
+  }
+
+  /* Let wide tables and code blocks scroll instead of overflowing the page */
+  #R-body table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  #R-body pre {
+    overflow-x: auto;
+    max-width: 100%;
+  }
+
+  /* Keep long words and inline code from blowing out the line width */
+  #R-body {
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+  }
+
+  /* Constrain the content-header logo to the viewport width */
+  #R-body img {
+    max-width: 100%;
+    height: auto;
+  }
 }
