@@ -45,6 +45,10 @@ jobs:
               - 'go.sum'
               - 'Makefile'
               - '.golangci.yml'
+              # The Go jobs are defined here, so a change to this file can alter
+              # or break them. Without this, a workflow-only edit ships with the
+              # jobs it modifies never having run.
+              - '.github/workflows/ci.yml'
 
   # ---------------------------------------------------------------------------
   # GO CHECKS
