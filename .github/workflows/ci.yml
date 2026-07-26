@@ -99,12 +99,8 @@ jobs:
 
       # govulncheck is tracked as a tool dependency in go.mod, so its version is
       # locked in go.sum (verified, lock-file enforced) and run via `go tool`.
-      # TEMP: 1.26.4 (stdlib CVE fix) is newer than setup-go's downloader; force
-      # Go's toolchain download. Remove once `go-version: 1.26` resolves to 1.26.4+.
       - name: Run govulncheck
         run: go tool govulncheck ./...
-        env:
-          GOTOOLCHAIN: go1.26.4
 
   # ---------------------------------------------------------------------------
   # SONARQUBE ANALYSIS (coverage + quality gate -> SonarCloud)
