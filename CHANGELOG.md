@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.21](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.20...v0.1.21) (2026-08-13)
+
+
+### Bug Fixes
+
+* **web:** make docs site mobile-friendly ([#66](https://github.com/afreidah/cloudflare-log-collector/issues/66)) ([56f728e](https://github.com/afreidah/cloudflare-log-collector/commit/56f728e8eb96a34f250025bac0ae195180b3a619)), closes [#65](https://github.com/afreidah/cloudflare-log-collector/issues/65)
+
 ## [0.1.20](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.19...v0.1.20) (2026-06-28)
 
 
