@@ -34,4 +34,5 @@ USER root
 RUN apk upgrade --no-cache
 USER 101
 COPY --from=build /src/web/public /usr/share/nginx/html
+COPY web/nginx-cache.conf /etc/nginx/conf.d/nginx-cache.conf
 EXPOSE 8080
