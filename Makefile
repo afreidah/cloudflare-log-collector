@@ -119,6 +119,12 @@ prep-changelog: ## Compress changelog for Debian packaging
 deb: prep-changelog ## Build .deb packages via GoReleaser snapshot
 	goreleaser release --snapshot --clean --skip=publish
 
+# Versions from the tag rather than the snapshot template, for publishing a
+# release. --skip=publish is explicit here because, unlike snapshot mode,
+# a real release would otherwise try to create a GitHub release of its own.
+deb-release: prep-changelog ## Build .deb packages for the checked-out tag
+	goreleaser release --clean --skip=publish
+
 # -------------------------------------------------------------------------
 # APTLY PUBLISHING
 # -------------------------------------------------------------------------
@@ -206,5 +212,5 @@ clean: ## Remove build artifacts
 	rm -f cloudflare-log-collector
 	docker rmi $(FULL_TAG) 2>/dev/null || true
 
-.PHONY: help builder build docker push test vet lint govulncheck run docs release-local prep-changelog deb publish-deb web-godoc web-serve web-build web-docker web-push clean
+.PHONY: help builder build docker push test vet lint govulncheck run docs release-local prep-changelog deb deb-release publish-deb web-godoc web-serve web-build web-docker web-push clean
 .DEFAULT_GOAL := help
