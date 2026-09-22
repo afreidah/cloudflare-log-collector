@@ -10,7 +10,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 <p align="center">
-  <strong><a href="https://cloudflare-log-collector.example.com">Project Website</a></strong>
+  <strong><a href="https://cloudflare-log-collector.munchbox.cc">Project Website</a></strong>
 </p>
 
 ![Grafana Dashboard](docs/images/grafana.png)
