@@ -1,6 +1,6 @@
 module github.com/afreidah/cloudflare-log-collector
 
-go 1.26.3
+go 1.27.2
 
 require (
 	github.com/prometheus/client_golang v1.24.1
