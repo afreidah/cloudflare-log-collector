@@ -768,7 +768,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "sum(increase(cflog_rum_pageviews_total{site=~\"$site\"}[$__range]))",
+          "expr": "sum(increase(cflog_rum_pageviews_total{site=~\"$site\", host=~\"$host\"}[$__range]))",
           "legendFormat": "page views"
         }
       ],
@@ -795,7 +795,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "sum(increase(cflog_rum_sessions_total{site=~\"$site\"}[$__range]))",
+          "expr": "sum(increase(cflog_rum_sessions_total{site=~\"$site\", host=~\"$host\"}[$__range]))",
           "legendFormat": "sessions"
         }
       ],
@@ -816,13 +816,13 @@
     {
       "type": "stat",
       "id": 46,
-      "title": "LCP p75 (worst device)",
+      "title": "LCP p75 (worst host/device)",
       "description": "Largest Contentful Paint p75. Google thresholds: good < 2.5s, needs improvement < 4s.",
       "gridPos": { "x": 8, "y": 47, "w": 4, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "max(cflog_rum_web_vital_seconds{vital=\"lcp\", site=~\"$site\"})",
+          "expr": "max(cflog_rum_web_vital_seconds{vital=\"lcp\", site=~\"$site\", host=~\"$host\"})",
           "legendFormat": "lcp"
         }
       ],
@@ -849,13 +849,13 @@
     {
       "type": "stat",
       "id": 47,
-      "title": "INP p75 (worst device)",
+      "title": "INP p75 (worst host/device)",
       "description": "Interaction to Next Paint p75. Google thresholds: good < 200ms, needs improvement < 500ms.",
       "gridPos": { "x": 12, "y": 47, "w": 4, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "max(cflog_rum_web_vital_seconds{vital=\"inp\", site=~\"$site\"})",
+          "expr": "max(cflog_rum_web_vital_seconds{vital=\"inp\", site=~\"$site\", host=~\"$host\"})",
           "legendFormat": "inp"
         }
       ],
@@ -882,13 +882,13 @@
     {
       "type": "stat",
       "id": 48,
-      "title": "CLS p75 (worst device)",
+      "title": "CLS p75 (worst host/device)",
       "description": "Cumulative Layout Shift p75 (unitless). Google thresholds: good < 0.1, needs improvement < 0.25.",
       "gridPos": { "x": 16, "y": 47, "w": 4, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "max(cflog_rum_cumulative_layout_shift{site=~\"$site\"})",
+          "expr": "max(cflog_rum_cumulative_layout_shift{site=~\"$site\", host=~\"$host\"})",
           "legendFormat": "cls"
         }
       ],
@@ -915,13 +915,13 @@
     {
       "type": "stat",
       "id": 49,
-      "title": "FCP p75 (worst device)",
+      "title": "FCP p75 (worst host/device)",
       "description": "First Contentful Paint p75. Google thresholds: good < 1.8s, needs improvement < 3s.",
       "gridPos": { "x": 20, "y": 47, "w": 4, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "max(cflog_rum_web_vital_seconds{vital=\"fcp\", site=~\"$site\"})",
+          "expr": "max(cflog_rum_web_vital_seconds{vital=\"fcp\", site=~\"$site\", host=~\"$host\"})",
           "legendFormat": "fcp"
         }
       ],
@@ -948,14 +948,14 @@
     {
       "type": "timeseries",
       "id": 50,
-      "title": "Page Views by Device",
-      "description": "Browser page-view rate split by device type",
+      "title": "Page Views by Service",
+      "description": "Browser page-view rate split by host, so sites sharing one Web Analytics site tag show separately",
       "gridPos": { "x": 0, "y": 51, "w": 8, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "sum by (device) (rate(cflog_rum_pageviews_total{site=~\"$site\"}[$__rate_interval]))",
-          "legendFormat": "{{device}}"
+          "expr": "sum by (host) (rate(cflog_rum_pageviews_total{site=~\"$site\", host=~\"$host\"}[$__rate_interval]))",
+          "legendFormat": "{{host}}"
         }
       ],
       "options": {
@@ -982,7 +982,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "topk(10, sum by (country) (increase(cflog_rum_pageviews_total{site=~\"$site\"}[$__range])))",
+          "expr": "topk(10, sum by (country) (increase(cflog_rum_pageviews_total{site=~\"$site\", host=~\"$host\"}[$__range])))",
           "legendFormat": "",
           "instant": true,
           "format": "table"
@@ -1029,14 +1029,14 @@
     {
       "type": "timeseries",
       "id": 52,
-      "title": "Core Web Vitals p75 (by device)",
-      "description": "Time-based Core Web Vitals (lcp, inp, fid, fcp, ttfb) at p75, in seconds. CLS is unitless and shown in its own stat.",
+      "title": "Core Web Vitals p75 (by host and device)",
+      "description": "Time-based Core Web Vitals (lcp, inp, fid, fcp, ttfb) at p75, in seconds, over real browsers only. CLS is unitless and shown in its own stat.",
       "gridPos": { "x": 16, "y": 51, "w": 8, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "cflog_rum_web_vital_seconds{site=~\"$site\"}",
-          "legendFormat": "{{vital}} ({{device}})"
+          "expr": "cflog_rum_web_vital_seconds{site=~\"$site\", host=~\"$host\"}",
+          "legendFormat": "{{vital}} {{host}} ({{device}})"
         }
       ],
       "options": {
@@ -1058,12 +1058,12 @@
       "type": "logs",
       "id": 53,
       "title": "Recent Page Loads (raw RUM data in Loki)",
-      "description": "The raw browser page-load rows (path, country, device, referer) the collector shipped to Loki",
+      "description": "The raw browser page-load rows (minute, host, path, country, device, referer, bot flag) the collector shipped to Loki, known bots included",
       "gridPos": { "x": 0, "y": 59, "w": 24, "h": 8 },
       "datasource": { "type": "loki", "uid": "loki" },
       "targets": [
         {
-          "expr": "{job=\"cloudflare\", type=\"rum_pageload\", site=~\"$site\"} | json",
+          "expr": "{job=\"cloudflare\", type=\"rum_pageload\", site=~\"$site\"} | json | dimensions_requestHost=~\"$host\"",
           "legendFormat": ""
         }
       ],

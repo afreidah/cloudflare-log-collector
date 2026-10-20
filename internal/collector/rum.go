@@ -11,7 +11,10 @@
 // vitals are p75 quantiles, which cannot be accumulated, so each poll reports
 // the p75 over a fixed trailing window into gauges; re-querying that window
 // every poll self-heals late data, so it needs no lag. The RUM datasets are
-// account-scoped and identified by site tag.
+// account-scoped and identified by site tag. A site covers every host in its
+// zone, so all RUM metrics carry a host label, and known bots are kept out of
+// them: bot page loads ship to Loki but are not counted, and web vitals are
+// queried for real browsers only.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -24,8 +27,6 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
-
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 // -------------------------------------------------------------------------
@@ -117,13 +118,20 @@ func (c *RUMCollector) pollPageloads(ctx context.Context) {
 }
 
 // updatePageloadMetrics accumulates page-view and session counters at bounded
-// cardinality (country x device); request path and referer stay in Loki only.
+// cardinality (country x device x host, hosts being the sites that carry the
+// beacon); request path and referer stay in Loki only. Known-bot rows have
+// already shipped to Loki but are not visitors, so they are not counted.
 func (c *RUMCollector) updatePageloadMetrics(groups []cloudflare.RUMPageloadGroup) {
 	for i := range groups {
 		d := groups[i].Dimensions
-		metrics.RUMPageviewsTotal.WithLabelValues(d.CountryName, d.DeviceType, c.scope).Add(float64(groups[i].Count))
+		if d.Bot != 0 {
+			continue
+		}
+
+		host := normalizeHost(d.RequestHost)
+		c.add(metrics.RUMPageviewsTotal, float64(groups[i].Count), d.CountryName, d.DeviceType, host)
 		if visits := groups[i].Sum.Visits; visits > 0 {
-			metrics.RUMSessionsTotal.WithLabelValues(d.CountryName, d.DeviceType, c.scope).Add(float64(visits))
+			c.add(metrics.RUMSessionsTotal, float64(visits), d.CountryName, d.DeviceType, host)
 		}
 	}
 }
@@ -155,31 +163,33 @@ func (c *RUMCollector) pollWebVitals(ctx context.Context) {
 
 	span.SetAttributes(telemetry.AttrGroupCount.Int(len(groups)))
 
-	// Clear this site's vitals before repopulating so a device type absent from
-	// the latest window does not linger at a stale value.
-	metrics.RUMWebVitalSeconds.DeletePartialMatch(prometheus.Labels{"site": c.scope})
-	metrics.RUMCumulativeLayoutShift.DeletePartialMatch(prometheus.Labels{"site": c.scope})
+	// Clear this site's vitals before repopulating so a host or device type
+	// absent from the latest window does not linger at a stale value.
+	c.clear(metrics.RUMWebVitalSeconds)
+	c.clear(metrics.RUMCumulativeLayoutShift)
 
 	c.updateWebVitalsMetrics(groups)
 	slog.DebugContext(ctx, "RUM web vitals collected", "site", c.scope, "groups", len(groups))
 }
 
-// updateWebVitalsMetrics sets the per-device Core Web Vitals gauges from the
-// rolling-window quantiles.
+// updateWebVitalsMetrics sets the per-host, per-device Core Web Vitals gauges
+// from the rolling-window quantiles. Known bots are already filtered out by the
+// query.
 func (c *RUMCollector) updateWebVitalsMetrics(groups []cloudflare.RUMWebVitalsGroup) {
 	for i := range groups {
+		host := normalizeHost(groups[i].Dimensions.RequestHost)
 		device := groups[i].Dimensions.DeviceType
 		q := groups[i].Quantiles
 
-		c.setTimeVital("lcp", device, q.LargestContentfulPaintP75)
-		c.setTimeVital("inp", device, q.InteractionToNextPaintP75)
-		c.setTimeVital("fid", device, q.FirstInputDelayP75)
-		c.setTimeVital("fcp", device, q.FirstContentfulPaintP75)
-		c.setTimeVital("ttfb", device, q.TimeToFirstByteP75)
+		c.setTimeVital("lcp", device, host, q.LargestContentfulPaintP75)
+		c.setTimeVital("inp", device, host, q.InteractionToNextPaintP75)
+		c.setTimeVital("fid", device, host, q.FirstInputDelayP75)
+		c.setTimeVital("fcp", device, host, q.FirstContentfulPaintP75)
+		c.setTimeVital("ttfb", device, host, q.TimeToFirstByteP75)
 
 		// CLS is a unitless layout-shift score, not a duration.
 		if cls := q.CumulativeLayoutShiftP75; cls >= 0 {
-			metrics.RUMCumulativeLayoutShift.WithLabelValues(device, c.scope).Set(cls)
+			c.set(metrics.RUMCumulativeLayoutShift, cls, device, host)
 		}
 	}
 }
@@ -187,9 +197,9 @@ func (c *RUMCollector) updateWebVitalsMetrics(groups []cloudflare.RUMWebVitalsGr
 // setTimeVital records a time-based Core Web Vital, converting the API's
 // microseconds to seconds. The -1 "no data" sentinel (e.g. no first-input delay
 // when there was no interaction) is skipped so it never shows up as a real 0.
-func (c *RUMCollector) setTimeVital(vital, device string, microseconds float64) {
+func (c *RUMCollector) setTimeVital(vital, device, host string, microseconds float64) {
 	if microseconds < 0 {
 		return
 	}
-	metrics.RUMWebVitalSeconds.WithLabelValues(vital, device, c.scope).Set(microseconds / 1e6)
+	c.set(metrics.RUMWebVitalSeconds, microseconds/1e6, vital, device, host)
 }

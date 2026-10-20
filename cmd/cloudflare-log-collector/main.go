@@ -175,6 +175,12 @@ type namedRunner struct {
 	runner lifecycle.Runner
 }
 
+// newNamedRunner names a collector's registration after its dataset and the
+// zone, account, or site it polls, e.g. "firewall-example.com".
+func newNamedRunner(dataset collector.Dataset, scope string, runner lifecycle.Runner) namedRunner {
+	return namedRunner{name: fmt.Sprintf("%s-%s", dataset, scope), runner: runner}
+}
+
 // plannedCollectors builds the full ordered set of collector registrations from
 // config: a firewall and HTTP collector per zone, plus an audit collector per
 // account and a RUM collector per site when those are enabled. Keeping the plan
@@ -203,8 +209,8 @@ func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Clien
 		}
 
 		planned = append(planned,
-			namedRunner{fmt.Sprintf("%s-%s", collector.DatasetFirewall, zone.Name), collector.NewFirewallCollector(cc)},
-			namedRunner{fmt.Sprintf("%s-%s", collector.DatasetHTTP, zone.Name), collector.NewHTTPCollector(cc)},
+			newNamedRunner(collector.DatasetFirewall, zone.Name, collector.NewFirewallCollector(cc)),
+			newNamedRunner(collector.DatasetHTTP, zone.Name, collector.NewHTTPCollector(cc)),
 		)
 	}
 
@@ -217,10 +223,7 @@ func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Clien
 				AccountName:  account.Name,
 			}
 
-			planned = append(planned, namedRunner{
-				name:   fmt.Sprintf("%s-%s", collector.DatasetAudit, account.Name),
-				runner: collector.NewAuditCollector(ac),
-			})
+			planned = append(planned, newNamedRunner(collector.DatasetAudit, account.Name, collector.NewAuditCollector(ac)))
 		}
 	}
 
@@ -234,10 +237,7 @@ func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Clien
 				SiteName:     site.Name,
 			}
 
-			planned = append(planned, namedRunner{
-				name:   fmt.Sprintf("%s-%s", collector.DatasetRUM, site.Name),
-				runner: collector.NewRUMCollector(rc),
-			})
+			planned = append(planned, newNamedRunner(collector.DatasetRUM, site.Name, collector.NewRUMCollector(rc)))
 		}
 	}
 

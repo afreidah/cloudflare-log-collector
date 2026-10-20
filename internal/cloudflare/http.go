@@ -49,39 +49,13 @@ type HTTPRequestSum struct {
 // edge and origin status, cache status, request source, and country. Grouping
 // by minute rather than second keeps a poll window well under the group limit
 // once the per-host dimensions multiply the groups.
-var httpDataset = dataset{
+var httpDataset = newDataset[HTTPRequestGroup](datasetSpec{
 	field: "httpRequestsAdaptiveGroups",
-	scope: "zones",
+	scope: zoneScope,
 	limit: 5000,
-	query: `query ($zoneId: String!, $since: String!, $until: String!, $limit: uint64!) {
-  viewer {
-    zones(filter: {zoneTag: $zoneId}) {
-      httpRequestsAdaptiveGroups(
-        filter: {datetime_gt: $since, datetime_leq: $until}
-        limit: $limit
-      ) {
-        count
-        dimensions {
-          datetimeMinute
-          clientRequestHTTPHost
-          clientRequestHTTPMethodName
-          edgeResponseStatus
-          originResponseStatus
-          cacheStatus
-          requestSource
-          clientCountryName
-        }
-        sum {
-          edgeResponseBytes
-        }
-      }
-    }
-  }
-}`,
-}
+})
 
 // QueryHTTPRequests fetches aggregated HTTP traffic stats for the given zone and time range.
 func (c *Client) QueryHTTPRequests(ctx context.Context, zoneID string, since, until time.Time) ([]HTTPRequestGroup, error) {
-	return queryDataset[HTTPRequestGroup](ctx, c, httpDataset, zoneID, since, until,
-		map[string]any{"zoneId": zoneID})
+	return queryDataset(ctx, c, httpDataset, zoneID, since, until, map[string]any{"zoneId": zoneID})
 }

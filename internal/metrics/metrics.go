@@ -97,35 +97,40 @@ var AuditEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 // -------------------------------------------------------------------------
 
 // The RUM page-view and session counters are kept at bounded cardinality
-// (country x device x site); the high-cardinality request path and referer are
-// shipped to Loki instead. The web-vital gauges report the p75 over the latest
-// poll's rolling window - quantiles cannot be accumulated into a counter.
+// (country x device x host x site, hosts being the websites carrying the
+// beacon); the high-cardinality request path and referer are shipped to Loki
+// instead. Known bots are excluded from every RUM metric. The web-vital gauges
+// report the p75 over the latest poll's rolling window - quantiles cannot be
+// accumulated into a counter.
 
-// RUMPageviewsTotal counts browser-side page views by country, device, and site.
+// RUMPageviewsTotal counts browser-side page views by country, device, host,
+// and site, excluding known bots.
 var RUMPageviewsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "cflog_rum_pageviews_total",
-	Help: "Total RUM page views observed via Cloudflare Web Analytics by country, device, and site",
-}, []string{"country", "device", "site"})
+	Help: "Total RUM page views observed via Cloudflare Web Analytics by country, device, host, and site (known bots excluded)",
+}, []string{"country", "device", "host", "site"})
 
-// RUMSessionsTotal counts RUM sessions (entry page loads) by country, device, and site.
+// RUMSessionsTotal counts RUM sessions (entry page loads) by country, device,
+// host, and site, excluding known bots.
 var RUMSessionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "cflog_rum_sessions_total",
-	Help: "Total RUM sessions (entry page loads) observed via Cloudflare Web Analytics by country, device, and site",
-}, []string{"country", "device", "site"})
+	Help: "Total RUM sessions (entry page loads) observed via Cloudflare Web Analytics by country, device, host, and site (known bots excluded)",
+}, []string{"country", "device", "host", "site"})
 
 // RUMWebVitalSeconds reports the p75 of each time-based Core Web Vital in
-// seconds, by vital, device, and site.
+// seconds, by vital, device, host, and site, over real browsers only.
 var RUMWebVitalSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "cflog_rum_web_vital_seconds",
-	Help: "RUM Core Web Vitals p75 in seconds (time-based vitals: lcp, inp, fid, fcp, ttfb) by vital, device, and site",
-}, []string{"vital", "device", "site"})
+	Help: "RUM Core Web Vitals p75 in seconds (time-based vitals: lcp, inp, fid, fcp, ttfb) by vital, device, host, and site (known bots excluded)",
+}, []string{"vital", "device", "host", "site"})
 
 // RUMCumulativeLayoutShift reports the p75 Cumulative Layout Shift (a unitless
-// score, so it has its own metric) by device and site.
+// score, so it has its own metric) by device, host, and site, over real
+// browsers only.
 var RUMCumulativeLayoutShift = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "cflog_rum_cumulative_layout_shift",
-	Help: "RUM Cumulative Layout Shift p75 (unitless layout-shift score) by device and site",
-}, []string{"device", "site"})
+	Help: "RUM Cumulative Layout Shift p75 (unitless layout-shift score) by device, host, and site (known bots excluded)",
+}, []string{"device", "host", "site"})
 
 // -------------------------------------------------------------------------
 // LOKI METRICS

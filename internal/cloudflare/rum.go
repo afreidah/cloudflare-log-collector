@@ -29,11 +29,18 @@ type RUMPageloadGroup struct {
 }
 
 // RUMPageloadDimensions holds the grouping dimensions for RUM page loads.
+// DatetimeMinute is the minute the views fall in. RequestHost is the website
+// viewed, which tells apart sites sharing one Web Analytics site tag (a site
+// covers every host in its zone). Bot is Cloudflare's known-bot flag: 0 for a
+// real browser, non-zero for a detected bot.
 type RUMPageloadDimensions struct {
-	RequestPath string `json:"requestPath"`
-	CountryName string `json:"countryName"`
-	DeviceType  string `json:"deviceType"`
-	RefererHost string `json:"refererHost"`
+	DatetimeMinute string `json:"datetimeMinute"`
+	RequestHost    string `json:"requestHost"`
+	RequestPath    string `json:"requestPath"`
+	CountryName    string `json:"countryName"`
+	DeviceType     string `json:"deviceType"`
+	RefererHost    string `json:"refererHost"`
+	Bot            int    `json:"bot"`
 }
 
 // RUMPageloadSum holds the aggregated sums for RUM page loads. Visits counts
@@ -43,7 +50,7 @@ type RUMPageloadSum struct {
 }
 
 // RUMWebVitalsGroup represents an aggregated Core Web Vitals data point from
-// Cloudflare Web Analytics (RUM), grouped by device type.
+// Cloudflare Web Analytics (RUM), grouped by host and device type.
 type RUMWebVitalsGroup struct {
 	Count      int                    `json:"count"`
 	Dimensions RUMWebVitalsDimensions `json:"dimensions"`
@@ -52,7 +59,8 @@ type RUMWebVitalsGroup struct {
 
 // RUMWebVitalsDimensions holds the grouping dimensions for RUM web vitals.
 type RUMWebVitalsDimensions struct {
-	DeviceType string `json:"deviceType"`
+	RequestHost string `json:"requestHost"`
+	DeviceType  string `json:"deviceType"`
 }
 
 // RUMWebVitalsQuantiles holds Core Web Vitals at the p75 quantile. The
@@ -71,74 +79,37 @@ type RUMWebVitalsQuantiles struct {
 // rumPageloadDataset fetches browser-side page-load groups for one Web
 // Analytics site. RUM datasets are account-scoped (under viewer.accounts),
 // unlike the zone-scoped firewall and HTTP datasets, and filtered by siteTag.
-var rumPageloadDataset = dataset{
-	field: "rumPageloadEventsAdaptiveGroups",
-	scope: "accounts",
-	limit: rumQueryLimit,
-	query: `query ($accountId: String!, $siteTag: String!, $since: String!, $until: String!, $limit: uint64!) {
-  viewer {
-    accounts(filter: {accountTag: $accountId}) {
-      rumPageloadEventsAdaptiveGroups(
-        filter: {datetime_gt: $since, datetime_leq: $until, siteTag: $siteTag}
-        limit: $limit
-      ) {
-        count
-        dimensions {
-          requestPath
-          countryName
-          deviceType
-          refererHost
-        }
-        sum {
-          visits
-        }
-      }
-    }
-  }
-}`,
-}
+// Known-bot rows are kept so they reach Loki; the collector leaves them out of
+// its counters.
+var rumPageloadDataset = newDataset[RUMPageloadGroup](datasetSpec{
+	field:   "rumPageloadEventsAdaptiveGroups",
+	scope:   accountScope,
+	vars:    []string{"siteTag"},
+	filters: []string{"siteTag: $siteTag"},
+	limit:   rumQueryLimit,
+})
 
-// rumWebVitalsDataset fetches Core Web Vitals p75 quantiles grouped by device
-// for one Web Analytics site.
-var rumWebVitalsDataset = dataset{
-	field: "rumWebVitalsEventsAdaptiveGroups",
-	scope: "accounts",
-	limit: rumQueryLimit,
-	query: `query ($accountId: String!, $siteTag: String!, $since: String!, $until: String!, $limit: uint64!) {
-  viewer {
-    accounts(filter: {accountTag: $accountId}) {
-      rumWebVitalsEventsAdaptiveGroups(
-        filter: {datetime_gt: $since, datetime_leq: $until, siteTag: $siteTag}
-        limit: $limit
-      ) {
-        count
-        dimensions {
-          deviceType
-        }
-        quantiles {
-          largestContentfulPaintP75
-          interactionToNextPaintP75
-          firstInputDelayP75
-          firstContentfulPaintP75
-          timeToFirstByteP75
-          cumulativeLayoutShiftP75
-        }
-      }
-    }
-  }
-}`,
-}
+// rumWebVitalsDataset fetches Core Web Vitals p75 quantiles grouped by host and
+// device for one Web Analytics site. Known bots are filtered out in the query
+// rather than afterwards, because a quantile cannot be split once computed.
+var rumWebVitalsDataset = newDataset[RUMWebVitalsGroup](datasetSpec{
+	field:   "rumWebVitalsEventsAdaptiveGroups",
+	scope:   accountScope,
+	vars:    []string{"siteTag"},
+	filters: []string{"siteTag: $siteTag", "bot: 0"},
+	limit:   rumQueryLimit,
+})
 
 // QueryRUMPageloads fetches browser-side page-load groups for the given Web
 // Analytics site and time range.
 func (c *Client) QueryRUMPageloads(ctx context.Context, accountID, siteTag string, since, until time.Time) ([]RUMPageloadGroup, error) {
-	return queryDataset[RUMPageloadGroup](ctx, c, rumPageloadDataset, siteTag, since, until,
+	return queryDataset(ctx, c, rumPageloadDataset, siteTag, since, until,
 		map[string]any{"accountId": accountID, "siteTag": siteTag})
 }
 
 // QueryRUMWebVitals fetches Core Web Vitals quantiles for the given Web
 // Analytics site and time range.
 func (c *Client) QueryRUMWebVitals(ctx context.Context, accountID, siteTag string, since, until time.Time) ([]RUMWebVitalsGroup, error) {
-	return queryDataset[RUMWebVitalsGroup](ctx, c, rumWebVitalsDataset, siteTag, since, until,
+	return queryDataset(ctx, c, rumWebVitalsDataset, siteTag, since, until,
 		map[string]any{"accountId": accountID, "siteTag": siteTag})
 }
