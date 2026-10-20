@@ -33,21 +33,18 @@ import (
 
 // dataset describes one Analytics dataset query: the document to send, where
 // its rows sit in the response, and how many to request.
+//
+// field is the dataset's field name in both the query and the response (e.g.
+// "firewallEventsAdaptive"). scope is the viewer node it lives under: "zones"
+// for the zone-scoped datasets, "accounts" for the account-scoped RUM datasets.
+// query is the GraphQL document; it must declare $since, $until, and
+// $limit: uint64!, plus whatever scope variables its caller passes. limit is
+// the most rows requested per query - a full page means the window may hold
+// more, so it is logged as possibly truncated.
 type dataset struct {
-	// field is the dataset's field name in both the query and the response,
-	// e.g. "firewallEventsAdaptive".
 	field string
-
-	// scope is the viewer node the dataset lives under: "zones" for the
-	// zone-scoped datasets, "accounts" for the account-scoped RUM datasets.
 	scope string
-
-	// query is the GraphQL document. It must declare $since, $until, and
-	// $limit: uint64!, plus whatever scope variables its caller passes.
 	query string
-
-	// limit is the most rows requested per query. A full page means the window
-	// may hold more, so it is logged as possibly truncated.
 	limit int
 }
 

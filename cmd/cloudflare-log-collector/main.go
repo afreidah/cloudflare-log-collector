@@ -183,13 +183,16 @@ type namedRunner struct {
 func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Client) []namedRunner {
 	var planned []namedRunner
 
-	// --- Settings every collector shares ---
+	// --- Settings every collector shares; RUM overrides the ingestion lag ---
 	common := collector.CommonConfig{
 		Loki:           lk,
 		PollInterval:   cfg.Cloudflare.PollInterval,
 		BackfillWindow: cfg.Cloudflare.BackfillWindow,
+		IngestionLag:   cfg.Cloudflare.IngestionLag,
 		BatchSize:      cfg.Loki.BatchSize,
 	}
+	rumCommon := common
+	rumCommon.IngestionLag = cfg.Cloudflare.WebAnalytics.IngestionLag
 
 	for _, zone := range cfg.Cloudflare.Zones {
 		cc := collector.ZoneCollectorConfig{
@@ -224,7 +227,7 @@ func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Clien
 	if cfg.Cloudflare.WebAnalytics.Enabled {
 		for _, site := range cfg.Cloudflare.WebAnalytics.Sites {
 			rc := collector.RUMCollectorConfig{
-				CommonConfig: common,
+				CommonConfig: rumCommon,
 				CF:           cf,
 				AccountID:    cfg.Cloudflare.WebAnalytics.AccountID,
 				SiteTag:      site.SiteTag,

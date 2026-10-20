@@ -5,11 +5,13 @@
 //
 // Polls Cloudflare Web Analytics (RUM) for one site and emits browser-side
 // telemetry. The two RUM datasets are handled differently because of their
-// shapes: page loads are counted, so they advance a seek cursor (exclusive
-// datetime_gt) and accumulate into counters - raw rows ship to Loki, bounded
-// counters to Prometheus. Web vitals are p75 quantiles, which cannot be
-// accumulated, so each poll reports the p75 over a fixed trailing window into
-// gauges. The RUM datasets are account-scoped and identified by site tag.
+// shapes: page loads are counted, so they run through the shared cursor-based
+// poll in poll.go, held back by the Web Analytics ingestion lag, and accumulate
+// into counters - raw rows ship to Loki, bounded counters to Prometheus. Web
+// vitals are p75 quantiles, which cannot be accumulated, so each poll reports
+// the p75 over a fixed trailing window into gauges; re-querying that window
+// every poll self-heals late data, so it needs no lag. The RUM datasets are
+// account-scoped and identified by site tag.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -24,17 +26,7 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"go.opentelemetry.io/otel/attribute"
 )
-
-// rumIngestionLag holds the page-load query window's leading edge back from
-// "now". RUM adaptive data lands with a processing delay, and the page-load
-// cursor visits each window exactly once, so querying right up to "now" would
-// read an empty (not-yet-ingested) window and then advance past it, permanently
-// skipping data that arrives later. Web vitals re-query a fixed trailing window
-// each poll and so self-heal without this. If page views still lag reality,
-// raise this above Cloudflare's observed RUM delay.
-const rumIngestionLag = 10 * time.Minute
 
 // -------------------------------------------------------------------------
 // RUM COLLECTOR CONFIG
@@ -58,17 +50,15 @@ type RUMCollectorConfig struct {
 
 // RUMCollector polls Cloudflare Web Analytics for one site, shipping page-load
 // detail to Loki and page-view/session counters plus Core Web Vitals gauges to
-// Prometheus. The base's scope is the site name.
+// Prometheus. The base's scope is the site name. pageloadSeen is the seek
+// cursor for the page-view counter stream; it advances only when a poll fully
+// succeeds (queried, shipped, counted) so a page view is counted exactly once
+// across polls. Web vitals use a rolling window instead and need no cursor.
 type RUMCollector struct {
 	base
-	cf        rumQuerier
-	accountID string
-	siteTag   string
-
-	// pageloadSeen is the seek cursor for the page-view counter stream. It
-	// advances only when a poll fully succeeds (queried, shipped, counted) so a
-	// page view is counted exactly once across polls. Web vitals use a rolling
-	// window instead and need no cursor.
+	cf           rumQuerier
+	accountID    string
+	siteTag      string
 	pageloadSeen time.Time
 }
 
@@ -108,49 +98,22 @@ func (c *RUMCollector) poll(ctx context.Context) {
 // PAGE LOADS (counters + Loki, advancing cursor)
 // -------------------------------------------------------------------------
 
-// pollPageloads collects page-load groups since the cursor, ships the raw rows
-// to Loki, and accumulates bounded page-view/session counters.
+// pollPageloads runs one page-load poll cycle: raw rows ship to Loki, bounded
+// page-view/session counters accumulate, and the cursor moves to the end of
+// each handled window.
 func (c *RUMCollector) pollPageloads(ctx context.Context) {
-	ctx, span := telemetry.StartSpan(ctx, "rum.pageload.poll",
-		telemetry.AttrDataset.String(DatasetRUMPageload.String()),
-		c.scopeAttr(),
-	)
-	defer span.End()
-
-	start := time.Now()
-
-	// Hold the leading edge back by the ingestion lag so this window's RUM data
-	// has landed; otherwise the cursor would step past not-yet-ingested data.
-	until := time.Now().UTC().Add(-rumIngestionLag)
-	if !until.After(c.pageloadSeen) {
-		return
-	}
-
-	groups, err := c.cf.QueryRUMPageloads(ctx, c.accountID, c.siteTag, c.pageloadSeen, until)
-	c.recordPoll(DatasetRUMPageload, start, err)
-	if err != nil {
-		c.fail(ctx, span, "RUM pageload poll failed", err)
-		return
-	}
-
-	span.SetAttributes(attribute.Int("cflog.group_count", len(groups)))
-
-	if len(groups) == 0 {
-		slog.DebugContext(ctx, "No new RUM page loads", "site", c.scope)
-		c.pageloadSeen = until
-		return
-	}
-
-	// Ship raw rows to Loki, then count the window and advance the cursor.
-	if err := shipThenCommit(ctx, &c.base, groups, func() {
-		c.updatePageloadMetrics(groups)
-		c.pageloadSeen = until
-	}); err != nil {
-		c.fail(ctx, span, "Failed to ship RUM page loads to Loki", err)
-		return
-	}
-
-	slog.InfoContext(ctx, "RUM page loads collected", "site", c.scope, "groups", len(groups))
+	pollCursor(ctx, &c.base, cursorPoll[cloudflare.RUMPageloadGroup]{
+		dataset:   DatasetRUMPageload,
+		span:      "rum.pageload.poll",
+		title:     "RUM page loads",
+		countAttr: telemetry.AttrGroupCount,
+		cursor:    &c.pageloadSeen,
+		advancer:  windowEnd[cloudflare.RUMPageloadGroup]{},
+		query: func(ctx context.Context, since, until time.Time) ([]cloudflare.RUMPageloadGroup, error) {
+			return c.cf.QueryRUMPageloads(ctx, c.accountID, c.siteTag, since, until)
+		},
+		count: c.updatePageloadMetrics,
+	})
 }
 
 // updatePageloadMetrics accumulates page-view and session counters at bounded
@@ -164,7 +127,6 @@ func (c *RUMCollector) updatePageloadMetrics(groups []cloudflare.RUMPageloadGrou
 		}
 	}
 }
-
 
 // -------------------------------------------------------------------------
 // WEB VITALS (gauges, rolling window)
@@ -181,7 +143,7 @@ func (c *RUMCollector) pollWebVitals(ctx context.Context) {
 	defer span.End()
 
 	start := time.Now()
-	until := time.Now().UTC()
+	until := start.UTC()
 	since := until.Add(-c.backfillWindow)
 
 	groups, err := c.cf.QueryRUMWebVitals(ctx, c.accountID, c.siteTag, since, until)
@@ -191,7 +153,7 @@ func (c *RUMCollector) pollWebVitals(ctx context.Context) {
 		return
 	}
 
-	span.SetAttributes(attribute.Int("cflog.group_count", len(groups)))
+	span.SetAttributes(telemetry.AttrGroupCount.Int(len(groups)))
 
 	// Clear this site's vitals before repopulating so a device type absent from
 	// the latest window does not linger at a stale value.

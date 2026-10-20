@@ -192,20 +192,21 @@ Order: stdlib, internal packages, external packages.
 
 ### Struct Organization
 
-Group related fields with inline comments explaining non-obvious fields:
+Never put comments between the items of a struct, interface, `const` block, or
+`var` block - no comment lines between fields and no trailing comments on them.
+When a field or constant needs explaining, describe it by name in the doc
+comment above the declaration and keep the item list bare:
 
 ```go
+// AuditCollector polls Cloudflare for account audit logs and ships them to
+// Loki. The base's scope is the account name. shippedAtCursor holds the IDs of
+// events already shipped at the lastSeen boundary, so they can be dropped if
+// the API returns them again.
 type AuditCollector struct {
-    cf           auditQuerier
-    loki         logPusher
-    accountID    string
-    accountName  string
-    pollInterval time.Duration
-    lastSeen     time.Time
-    batchSize    int
-
-    // shippedAtCursor holds the IDs of events already shipped at the lastSeen
-    // boundary, so they can be dropped if the API returns them again.
+    base
+    cf              auditQuerier
+    accountID       string
+    lastSeen        time.Time
     shippedAtCursor map[string]struct{}
 }
 ```
@@ -282,7 +283,9 @@ If none apply - single impl, single consumer, no test fake, no cycle, no boundar
 
 **Composition root, no DI framework.** `cmd/cloudflare-log-collector/main.go` is the single composition root. It constructs the concrete `*cloudflare.Client` and `*loki.Client` once, builds one `CommonConfig` and a per-zone/account/site config around it, and registers each collector with the `lifecycle.Manager`. There is no dependency-injection container; wiring is explicit and read top-to-bottom in `main`.
 
-**Shared collector behavior lives in the base.** Every collector embeds `base` (`internal/collector/base.go`), built by `newBase` from its `CommonConfig` and an `identity` (display name, Loki stream type, scope key and name, record noun). The base owns what is the same for all of them: the poll loop (`run`), poll-outcome metrics (`recordPoll`), the span scope attribute, error reporting (`fail`), the backfill cursor start, and the Loki stream labels used by `shipThenCommit`. A collector keeps only what is its own - its querier, its IDs, and its cursor state - and should not reimplement anything the base provides.
+**Shared collector behavior lives in the base.** Every collector embeds `base` (`internal/collector/base.go`), built by `newBase` from its `CommonConfig` and an `identity` (display name, Loki stream type, scope key and name, record noun). The base owns what is the same for all of them: the poll loop (`run`), poll-outcome metrics (`recordPoll`), the span scope attribute, error reporting (`fail`), the backfill cursor start, the lagged poll window (`pollWindow`), and the Loki stream labels used by `shipThenCommit`. A collector keeps only what is its own - its querier, its IDs, and its cursor state - and should not reimplement anything the base provides.
+
+**Cursor-based collectors use the poll template.** A collector that reads a dataset from a seek cursor does not write its own poll cycle. It describes the dataset with a `cursorPoll` spec (`internal/collector/poll.go`) - dataset, span name, log title, count attribute, cursor, cursor advancer, query, and counters, plus an optional filter and post-advance hook - and calls `pollCursor`, which owns the lagged window, the not-yet-ingested skip, the span, poll metrics, error reporting, and ship-then-commit. Pick the `cursorAdvancer` from the dataset's shape (`internal/collector/cursor.go`): `windowEnd` for aggregated groups, which cover the whole window, and `lastEvent` for capped pages of events, where the cursor may only move to the last event shipped. Rolling-window polls that re-query a trailing window every cycle (RUM web vitals) are not cursor-based and stay outside the template.
 
 **Validation lives in config, not constructors.** Constructors here do not panic on nil and do not re-validate - operator-facing invariants (missing API token, empty zone list, missing Loki endpoint) are checked once in `config.setDefaultsAndValidate`, which gathers errors with `errors.Join` and returns them so `main` can report and exit. A constructor trusts that `main` passed it validated, non-nil dependencies.
 
@@ -343,9 +346,10 @@ internal/
   loki/                         # Loki push API client (producer)
   retry/                        # HTTP retry policy and attempt loop shared by both clients
   collector/                    # Pollers: firewall, http, audit, rum. Shared collector base
-                                # (config, identity, poll loop, poll metrics) in base.go;
-                                # ship-then-commit in shipping.go; consumer interfaces in
-                                # consumer_interfaces.go; cursor helpers in cursor.go
+                                # (config, identity, poll loop, poll window, poll metrics)
+                                # in base.go; cursor-based poll template in poll.go; cursor
+                                # kinds in cursor.go; ship-then-commit in shipping.go;
+                                # consumer interfaces in consumer_interfaces.go
   lifecycle/                    # Background service supervisor (Runner / Stopper)
   metrics/                      # Prometheus metric definitions (promauto)
   telemetry/                    # OTel tracer init, span helpers, slog TraceHandler

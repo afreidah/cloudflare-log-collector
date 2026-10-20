@@ -33,10 +33,8 @@ import (
 // CONSTANTS
 // -------------------------------------------------------------------------
 
-const (
-	// TracerName identifies spans created by this service.
-	TracerName = "cloudflare-log-collector"
-)
+// TracerName identifies spans created by this service.
+const TracerName = "cloudflare-log-collector"
 
 // Version of the service for trace metadata. Set at build time via
 // -ldflags "-X github.com/afreidah/cloudflare-log-collector/internal/telemetry.Version=..."
@@ -139,7 +137,12 @@ func FailSpan(span trace.Span, err error) {
 // COMMON ATTRIBUTES
 // -------------------------------------------------------------------------
 
+// Span attribute keys shared across the codebase. AttrDataset names the
+// dataset a span works on. AttrEventCount and AttrGroupCount record how many
+// rows a poll returned: events for event datasets (firewall, audit), groups
+// for aggregated ones (HTTP traffic, RUM).
 var (
 	AttrDataset    = attribute.Key("cflog.dataset")
 	AttrEventCount = attribute.Key("cflog.event_count")
+	AttrGroupCount = attribute.Key("cflog.group_count")
 )

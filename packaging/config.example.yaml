@@ -20,14 +20,20 @@ cloudflare:
   # Browser-side RUM / Web Analytics collection (disabled by default). Web
   # Analytics must be enabled on the zone, and the API token needs Account
   # Analytics Read. site_tag is the Web Analytics site identifier.
+  # ingestion_lag holds page-load windows back from now while RUM data lands.
   web_analytics:
     enabled: false
     account_id: "${CF_ACCOUNT_ID}"
     sites:
       - site_tag: "${CF_RUM_SITE_TAG}"
         name: "example.com"
+    ingestion_lag: 10m
   poll_interval: 5m
   backfill_window: 1h
+  # Hold firewall, HTTP, and audit poll windows back from now so Cloudflare has
+  # finished ingesting them before they are read. Must be less than
+  # backfill_window.
+  ingestion_lag: 3m
 
 loki:
   endpoint: "http://loki:3100"

@@ -28,13 +28,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// graphQLEndpoint is the Cloudflare Analytics GraphQL API URL. maxResponseBytes
+// caps the size of response bodies read from the API (10 MB) to guard against
+// unbounded memory allocation.
 const (
-	// graphQLEndpoint is the Cloudflare Analytics GraphQL API URL.
-	graphQLEndpoint = "https://api.cloudflare.com/client/v4/graphql"
-
-	// maxResponseBytes caps the size of response bodies read from the API to
-	// guard against unbounded memory allocation.
-	maxResponseBytes = 10 << 20 // 10 MB
+	graphQLEndpoint  = "https://api.cloudflare.com/client/v4/graphql"
+	maxResponseBytes = 10 << 20
 )
 
 // -------------------------------------------------------------------------
