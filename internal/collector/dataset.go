@@ -15,24 +15,18 @@ package collector
 // Dataset identifies a Cloudflare dataset a collector polls.
 type Dataset string
 
+// The datasets the collectors poll: DatasetFirewall is firewallEventsAdaptive,
+// DatasetHTTP is httpRequestsAdaptiveGroups, DatasetAudit is the account audit
+// logs, DatasetRUMPageload is rumPageloadEventsAdaptiveGroups, and
+// DatasetRUMWebVitals is rumWebVitalsEventsAdaptiveGroups. DatasetRUM names the
+// RUM collector as a whole (its lifecycle registration key); the two RUM
+// datasets carry the metric labels.
 const (
-	// DatasetFirewall is the firewallEventsAdaptive dataset.
-	DatasetFirewall Dataset = "firewall"
-
-	// DatasetHTTP is the httpRequestsAdaptiveGroups dataset.
-	DatasetHTTP Dataset = "http"
-
-	// DatasetAudit is the account audit logs dataset.
-	DatasetAudit Dataset = "audit"
-
-	// DatasetRUM names the RUM collector as a whole (used for its lifecycle
-	// registration key); the two RUM datasets below carry the metric labels.
-	DatasetRUM Dataset = "rum"
-
-	// DatasetRUMPageload is the rumPageloadEventsAdaptiveGroups dataset.
-	DatasetRUMPageload Dataset = "rum_pageload"
-
-	// DatasetRUMWebVitals is the rumWebVitalsEventsAdaptiveGroups dataset.
+	DatasetFirewall     Dataset = "firewall"
+	DatasetHTTP         Dataset = "http"
+	DatasetAudit        Dataset = "audit"
+	DatasetRUM          Dataset = "rum"
+	DatasetRUMPageload  Dataset = "rum_pageload"
 	DatasetRUMWebVitals Dataset = "rum_web_vitals"
 )
 

@@ -165,9 +165,11 @@ func (c *Client) Push(ctx context.Context, labels map[string]string, entries []E
 // -------------------------------------------------------------------------
 
 // Entry is a single log line with a nanosecond-precision timestamp string.
+// Timestamp is nanoseconds since the epoch as a string, and Line is the
+// JSON-encoded log line.
 type Entry struct {
-	Timestamp string // nanoseconds since epoch as a string
-	Line      string // JSON-encoded log line
+	Timestamp string
+	Line      string
 }
 
 // NewEntry creates a log entry from a time and JSON line.

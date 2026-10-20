@@ -4,9 +4,10 @@
 // Author: Alex Freidah
 //
 // Polls the Cloudflare httpRequestsAdaptiveGroups dataset on a configurable
-// interval. Updates Prometheus gauges with aggregated traffic statistics and
-// ships raw traffic groups to Loki as structured JSON logs. Each poll cycle
-// is wrapped in an OpenTelemetry span for trace correlation.
+// interval. Accumulates aggregated traffic statistics into Prometheus counters
+// and ships raw traffic groups to Loki as structured JSON logs. Its seek cursor
+// moves to the end of each handled window (see cursor.go), and each cycle runs
+// through the shared cursor-based poll in poll.go.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -14,14 +15,11 @@ package collector
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
-
-	"go.opentelemetry.io/otel/attribute"
 )
 
 // -------------------------------------------------------------------------
@@ -64,44 +62,21 @@ func (c *HTTPCollector) Run(ctx context.Context) error {
 	return c.run(ctx, c.lastSeen, c.poll)
 }
 
-// poll executes a single HTTP traffic collection cycle within a traced span.
+// poll runs one HTTP traffic poll cycle; the cursor moves to the end of each
+// handled window.
 func (c *HTTPCollector) poll(ctx context.Context) {
-	ctx, span := telemetry.StartSpan(ctx, "http.poll",
-		telemetry.AttrDataset.String(DatasetHTTP.String()),
-		c.scopeAttr(),
-	)
-	defer span.End()
-
-	start := time.Now()
-	until := time.Now().UTC()
-
-	groups, err := c.cf.QueryHTTPRequests(ctx, c.zoneID, c.lastSeen, until)
-	c.recordPoll(DatasetHTTP, start, err)
-	if err != nil {
-		c.fail(ctx, span, "HTTP traffic poll failed", err)
-		return
-	}
-
-	span.SetAttributes(attribute.Int("cflog.group_count", len(groups)))
-
-	if len(groups) == 0 {
-		slog.DebugContext(ctx, "No new HTTP traffic data")
-		c.lastSeen = until
-		return
-	}
-
-	slog.InfoContext(ctx, "HTTP traffic data fetched", "groups", len(groups))
-
-	// --- Ship raw groups to Loki, then count the window and advance ---
-	if err := shipThenCommit(ctx, &c.base, groups, func() {
-		c.updateMetrics(groups)
-		c.lastSeen = until
-	}); err != nil {
-		c.fail(ctx, span, "Failed to ship HTTP traffic to Loki", err)
-		return
-	}
-
-	slog.InfoContext(ctx, "HTTP traffic pushed to Loki", "groups", len(groups))
+	pollCursor(ctx, &c.base, cursorPoll[cloudflare.HTTPRequestGroup]{
+		dataset:   DatasetHTTP,
+		span:      "http.poll",
+		title:     "HTTP traffic groups",
+		countAttr: telemetry.AttrGroupCount,
+		cursor:    &c.lastSeen,
+		advancer:  windowEnd[cloudflare.HTTPRequestGroup]{},
+		query: func(ctx context.Context, since, until time.Time) ([]cloudflare.HTTPRequestGroup, error) {
+			return c.cf.QueryHTTPRequests(ctx, c.zoneID, since, until)
+		},
+		count: c.updateMetrics,
+	})
 }
 
 // updateMetrics adds the latest poll window's counts to the cumulative HTTP

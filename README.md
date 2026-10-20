@@ -133,8 +133,10 @@ cloudflare:
     sites:
       - site_tag: "${CF_RUM_SITE_TAG}" # Web Analytics site identifier
         name: "example.com"
+    ingestion_lag: 10m                # Hold RUM page-load windows back from now (default: 10m)
   poll_interval: 5m                   # How often to poll (default: 5m)
   backfill_window: 1h                 # On startup, fetch this far back (default: 1h)
+  ingestion_lag: 3m                   # Hold firewall/HTTP/audit windows back from now (default: 3m)
 
 loki:
   endpoint: "http://loki:3100"        # Loki push API base URL
@@ -248,7 +250,8 @@ make clean                  # remove build artifacts
 |   |   |-- audit.go                  # REST audit logs query
 |   |   |-- client_test.go, rum_test.go, transport_test.go
 |   |-- collector/
-|   |   |-- base.go                   # Shared config, identity, poll loop, poll metrics
+|   |   |-- base.go                   # Shared config, identity, poll loop, poll window, metrics
+|   |   |-- poll.go                   # Cursor-based poll template every cursor poller uses
 |   |   |-- shipping.go               # Ship to Loki, then commit the poll window
 |   |   |-- firewall.go               # Firewall event poller
 |   |   |-- http.go                   # HTTP traffic poller, counters
@@ -256,7 +259,7 @@ make clean                  # remove build artifacts
 |   |   |-- rum.go                    # RUM poller: counters, vitals
 |   |   |-- consumer_interfaces.go    # Narrow consumer-declared interfaces
 |   |   |-- dataset.go                # Typed dataset name constants
-|   |   |-- cursor.go                 # Shared seek-cursor helpers
+|   |   |-- cursor.go                 # Cursor kinds: window end or last event
 |   |   `-- *_test.go                 # helpers_test.go holds shared fixtures
 |   |-- config/
 |   |   |-- config.go                 # YAML config with env var expansion
@@ -302,6 +305,8 @@ The Cloudflare GraphQL Analytics API allows 300 queries per 5 minutes. With two 
 Both the Cloudflare and Loki clients automatically retry on transient failures (HTTP 429, 502, 503, 504) with exponential backoff up to 3 retries, through one shared retry policy. The `Retry-After` header is honored when present. If a query returns the maximum number of results (10,000 firewall events, or 5,000 HTTP or RUM groups), a warning is logged indicating potential truncation.
 
 A poll window is only committed - counted into Prometheus and its cursor advanced - after Loki has accepted every batch. If a push fails, the window is re-queried on the next poll and counted exactly once when that push succeeds.
+
+Cloudflare ingests analytics with a processing delay, so each cursor-based poll reads up to `now - ingestion_lag` rather than `now`; otherwise data that lands after its window was polled would be skipped for good. Zone data was measured at under two minutes behind, so `cloudflare.ingestion_lag` defaults to 3m; RUM lands later, so `web_analytics.ingestion_lag` defaults to 10m. RUM web vitals re-query a trailing window every poll and need no lag.
 
 ## License
 

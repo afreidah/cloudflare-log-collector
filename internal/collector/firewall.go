@@ -4,9 +4,9 @@
 // Author: Alex Freidah
 //
 // Polls the Cloudflare firewallEventsAdaptive dataset on a configurable interval
-// and ships events to Loki as structured JSON log lines. Tracks the last-seen
-// event timestamp for seek-based pagination to avoid duplicates across polls.
-// Each poll cycle is wrapped in an OpenTelemetry span for trace correlation.
+// and ships events to Loki as structured JSON log lines, counting them by
+// action. Its seek cursor follows the last event shipped (see cursor.go), and
+// each cycle runs through the shared cursor-based poll in poll.go.
 // -------------------------------------------------------------------------------
 
 // Package collector runs the firewall, HTTP traffic, audit log, and RUM poll
@@ -16,13 +16,11 @@ package collector
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
+	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
-
-	"go.opentelemetry.io/otel/attribute"
 )
 
 // -------------------------------------------------------------------------
@@ -77,51 +75,23 @@ func (c *FirewallCollector) Run(ctx context.Context) error {
 	return c.run(ctx, c.lastSeen, c.poll)
 }
 
-// poll executes a single firewall event collection cycle within a traced span.
+// poll runs one firewall event poll cycle; the cursor moves to the last event
+// shipped.
 func (c *FirewallCollector) poll(ctx context.Context) {
-	ctx, span := telemetry.StartSpan(ctx, "firewall.poll",
-		telemetry.AttrDataset.String(DatasetFirewall.String()),
-		c.scopeAttr(),
-	)
-	defer span.End()
-
-	start := time.Now()
-	until := time.Now().UTC()
-
-	events, err := c.cf.QueryFirewallEvents(ctx, c.zoneID, c.lastSeen, until)
-	c.recordPoll(DatasetFirewall, start, err)
-	if err != nil {
-		c.fail(ctx, span, "Firewall poll failed", err)
-		return
-	}
-
-	span.SetAttributes(attribute.Int("cflog.event_count", len(events)))
-
-	if len(events) == 0 {
-		slog.DebugContext(ctx, "No new firewall events")
-		return
-	}
-
-	slog.InfoContext(ctx, "Firewall events fetched", "count", len(events))
-
-	// --- Ship events to Loki in batches, then count them and advance ---
-	if err := shipThenCommit(ctx, &c.base, events, func() {
-		for i := range events {
-			metrics.FirewallEventsTotal.WithLabelValues(events[i].Action, c.scope).Inc()
-		}
-
-		// Advance cursor to the last event's timestamp.
-		lastEvent := events[len(events)-1]
-		if t, ok := parseEventTime(lastEvent.Datetime); ok {
-			c.lastSeen = t
-		} else {
-			slog.WarnContext(ctx, "Unparseable firewall event timestamp, cursor not advanced",
-				"zone", c.scope, "datetime", lastEvent.Datetime)
-		}
-	}); err != nil {
-		c.fail(ctx, span, "Failed to ship firewall events to Loki", err)
-		return
-	}
-
-	slog.InfoContext(ctx, "Firewall events pushed to Loki", "count", len(events))
+	pollCursor(ctx, &c.base, cursorPoll[cloudflare.FirewallEvent]{
+		dataset:   DatasetFirewall,
+		span:      "firewall.poll",
+		title:     "Firewall events",
+		countAttr: telemetry.AttrEventCount,
+		cursor:    &c.lastSeen,
+		advancer:  lastEvent[cloudflare.FirewallEvent]{timestamp: func(e cloudflare.FirewallEvent) string { return e.Datetime }},
+		query: func(ctx context.Context, since, until time.Time) ([]cloudflare.FirewallEvent, error) {
+			return c.cf.QueryFirewallEvents(ctx, c.zoneID, since, until)
+		},
+		count: func(events []cloudflare.FirewallEvent) {
+			for i := range events {
+				metrics.FirewallEventsTotal.WithLabelValues(events[i].Action, c.scope).Inc()
+			}
+		},
+	})
 }

@@ -66,6 +66,37 @@ func TestBase_CursorStartIsOneBackfillWindowAgo(t *testing.T) {
 }
 
 // -------------------------------------------------------------------------
+// POLL WINDOW
+// -------------------------------------------------------------------------
+
+func TestPollWindow_EndsOneLagBeforeNow(t *testing.T) {
+	b := testBase(time.Minute)
+	b.ingestionLag = 3 * time.Minute
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+
+	until, ok := b.pollWindow(now, now.Add(-time.Hour))
+	if !ok {
+		t.Fatal("window ending after the cursor should be open")
+	}
+	if want := now.Add(-3 * time.Minute); !until.Equal(want) {
+		t.Errorf("until = %v, want %v", until, want)
+	}
+}
+
+func TestPollWindow_ClosedUntilLagHasPassed(t *testing.T) {
+	b := testBase(time.Minute)
+	b.ingestionLag = 3 * time.Minute
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+
+	// The cursor already sits at or past now - lag: nothing new has landed.
+	for _, cursor := range []time.Time{now.Add(-3 * time.Minute), now.Add(-time.Minute)} {
+		if _, ok := b.pollWindow(now, cursor); ok {
+			t.Errorf("cursor %v: window should be closed", cursor)
+		}
+	}
+}
+
+// -------------------------------------------------------------------------
 // RECORD POLL
 // -------------------------------------------------------------------------
 

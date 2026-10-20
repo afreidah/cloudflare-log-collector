@@ -3,9 +3,10 @@
 //
 // Author: Alex Freidah
 //
-// Tests for the firewall and HTTP collector poll orchestration. Verifies the
-// full poll cycle: Cloudflare API query, Loki shipping, metric updates, and
-// cursor advancement. Uses httptest servers for both Cloudflare and Loki.
+// Tests for the poll cycle: the cursor-based poll template on its own (lagged
+// window, closed-window skip, empty windows per cursor advancer, ship-then-commit,
+// failure paths, filtering), and the firewall and HTTP collectors driving it
+// end to end against httptest servers for both Cloudflare and Loki.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -419,5 +420,165 @@ func TestHTTPPoll_LokiRecovers_CountsWindowOnce(t *testing.T) {
 	assertCounterValue(t, metrics.HTTPBytesTotal.WithLabelValues("edge", "example.com"), 5000)
 	if cf.httpCalls != 2 {
 		t.Errorf("http querier called %d times, want 2", cf.httpCalls)
+	}
+}
+
+// -------------------------------------------------------------------------
+// CURSOR-BASED POLL TEMPLATE
+// -------------------------------------------------------------------------
+
+// templatePoll is a pollCursor fixture: a base shipping to push with the given
+// ingestion lag, and a spec over cursorRow whose query returns rows/err and
+// records the window it was asked for. counted collects the rows passed to
+// count, and advancedWith the rows passed to advanced.
+type templatePoll struct {
+	b            base
+	push         *fakePusher
+	cursor       time.Time
+	rows         []cursorRow
+	err          error
+	queries      int
+	since, until time.Time
+	counted      []cursorRow
+	advancedWith []cursorRow
+}
+
+func newTemplatePoll(lag time.Duration) *templatePoll {
+	tp := &templatePoll{push: &fakePusher{}}
+	common := testCommon(tp.push)
+	common.IngestionLag = lag
+	tp.b = newBase(common, identity{name: "Test", stream: "test", scopeKey: "zone", scope: "example.com", record: "test row"})
+	tp.cursor = time.Now().UTC().Add(-time.Hour)
+	return tp
+}
+
+func (tp *templatePoll) spec(advancer cursorAdvancer[cursorRow]) cursorPoll[cursorRow] {
+	return cursorPoll[cursorRow]{
+		dataset:   DatasetFirewall,
+		span:      "test.poll",
+		title:     "Test rows",
+		countAttr: "cflog.test_count",
+		cursor:    &tp.cursor,
+		advancer:  advancer,
+		query: func(_ context.Context, since, until time.Time) ([]cursorRow, error) {
+			tp.queries++
+			tp.since, tp.until = since, until
+			return tp.rows, tp.err
+		},
+		count:    func(rows []cursorRow) { tp.counted = append(tp.counted, rows...) },
+		advanced: func(rows []cursorRow) { tp.advancedWith = rows },
+	}
+}
+
+func TestPollCursor_QueriesUpToNowMinusLag(t *testing.T) {
+	tp := newTemplatePoll(3 * time.Minute)
+	since := tp.cursor
+
+	before := time.Now().UTC()
+	pollCursor(context.Background(), &tp.b, tp.spec(windowEnd[cursorRow]{}))
+	after := time.Now().UTC()
+
+	if !tp.since.Equal(since) {
+		t.Errorf("since = %v, want the cursor %v", tp.since, since)
+	}
+	if tp.until.Before(before.Add(-3*time.Minute)) || tp.until.After(after.Add(-3*time.Minute)) {
+		t.Errorf("until = %v, want now - 3m", tp.until)
+	}
+}
+
+func TestPollCursor_ClosedWindowSkipsWithoutQuerying(t *testing.T) {
+	tp := newTemplatePoll(3 * time.Minute)
+	tp.cursor = time.Now().UTC().Add(-time.Minute) // inside the lag
+	cursor := tp.cursor
+
+	pollCursor(context.Background(), &tp.b, tp.spec(windowEnd[cursorRow]{}))
+
+	if tp.queries != 0 {
+		t.Errorf("queries = %d, want 0 for a window not yet ingested", tp.queries)
+	}
+	if !tp.cursor.Equal(cursor) {
+		t.Errorf("cursor moved to %v, want it to stay at %v", tp.cursor, cursor)
+	}
+}
+
+func TestPollCursor_EmptyWindowEndAdvancesEventStays(t *testing.T) {
+	window := newTemplatePoll(0)
+	pollCursor(context.Background(), &window.b, window.spec(windowEnd[cursorRow]{}))
+	if !window.cursor.Equal(window.until) {
+		t.Errorf("windowEnd cursor = %v, want the window end %v", window.cursor, window.until)
+	}
+
+	event := newTemplatePoll(0)
+	cursor := event.cursor
+	pollCursor(context.Background(), &event.b, event.spec(lastEvent[cursorRow]{timestamp: cursorRowTime}))
+	if !event.cursor.Equal(cursor) {
+		t.Errorf("lastEvent cursor moved to %v on an empty window, want %v", event.cursor, cursor)
+	}
+
+	if len(window.push.entries)+len(event.push.entries) != 0 {
+		t.Error("an empty window must not push to Loki")
+	}
+}
+
+func TestPollCursor_ShipsCountsAndAdvances(t *testing.T) {
+	tp := newTemplatePoll(0)
+	tp.rows = []cursorRow{{At: "2026-10-19T11:00:00Z"}, {At: "2026-10-19T11:05:00Z"}}
+
+	pollCursor(context.Background(), &tp.b, tp.spec(lastEvent[cursorRow]{timestamp: cursorRowTime}))
+
+	if len(tp.push.entries) != 1 || len(tp.push.entries[0]) != 2 {
+		t.Fatalf("pushes = %v, want one push of 2 rows", tp.push.entries)
+	}
+	if len(tp.counted) != 2 {
+		t.Errorf("counted %d rows, want 2", len(tp.counted))
+	}
+	if want := time.Date(2026, 10, 19, 11, 5, 0, 0, time.UTC); !tp.cursor.Equal(want) {
+		t.Errorf("cursor = %v, want the last row %v", tp.cursor, want)
+	}
+	if len(tp.advancedWith) != 2 {
+		t.Errorf("advanced ran with %d rows, want 2", len(tp.advancedWith))
+	}
+}
+
+func TestPollCursor_QueryErrorLeavesEverythingAlone(t *testing.T) {
+	tp := newTemplatePoll(0)
+	tp.err = errors.New("boom")
+	cursor := tp.cursor
+
+	pollCursor(context.Background(), &tp.b, tp.spec(windowEnd[cursorRow]{}))
+
+	if !tp.cursor.Equal(cursor) || len(tp.push.entries) != 0 || len(tp.counted) != 0 {
+		t.Errorf("query error must not move the cursor, ship, or count (cursor %v, pushes %d, counted %d)",
+			tp.cursor, len(tp.push.entries), len(tp.counted))
+	}
+}
+
+func TestPollCursor_PushErrorDoesNotCountOrAdvance(t *testing.T) {
+	tp := newTemplatePoll(0)
+	tp.push.err = errors.New("loki down")
+	tp.rows = []cursorRow{{At: "2026-10-19T11:00:00Z"}}
+	cursor := tp.cursor
+
+	pollCursor(context.Background(), &tp.b, tp.spec(lastEvent[cursorRow]{timestamp: cursorRowTime}))
+
+	if !tp.cursor.Equal(cursor) || len(tp.counted) != 0 || tp.advancedWith != nil {
+		t.Errorf("failed push must not count, advance, or run advanced (cursor %v, counted %d)",
+			tp.cursor, len(tp.counted))
+	}
+}
+
+func TestPollCursor_FilterRunsBeforeShipAndCount(t *testing.T) {
+	tp := newTemplatePoll(0)
+	tp.rows = []cursorRow{{At: "2026-10-19T11:00:00Z"}, {At: "2026-10-19T11:05:00Z"}}
+	spec := tp.spec(lastEvent[cursorRow]{timestamp: cursorRowTime})
+	spec.filter = func(rows []cursorRow) []cursorRow { return rows[:1] }
+
+	pollCursor(context.Background(), &tp.b, spec)
+
+	if len(tp.counted) != 1 || len(tp.push.entries[0]) != 1 {
+		t.Errorf("filtered rows: counted %d, shipped %d; want 1 and 1", len(tp.counted), len(tp.push.entries[0]))
+	}
+	if want := time.Date(2026, 10, 19, 11, 0, 0, 0, time.UTC); !tp.cursor.Equal(want) {
+		t.Errorf("cursor = %v, want the last kept row %v", tp.cursor, want)
 	}
 }

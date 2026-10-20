@@ -34,7 +34,10 @@ type Config struct {
 	Logging    LoggingConfig    `yaml:"logging"`
 }
 
-// CloudflareConfig holds Cloudflare API connection settings.
+// CloudflareConfig holds Cloudflare API connection settings. IngestionLag holds
+// each cursor-based poll's window end back from now, so Cloudflare has finished
+// ingesting a window before it is read and the cursor moves past it; it applies
+// to the firewall, HTTP, and audit datasets (Web Analytics has its own).
 type CloudflareConfig struct {
 	APIToken       string             `yaml:"api_token"`
 	Zones          []ZoneConfig       `yaml:"zones"`
@@ -42,6 +45,7 @@ type CloudflareConfig struct {
 	WebAnalytics   WebAnalyticsConfig `yaml:"web_analytics"`
 	PollInterval   time.Duration      `yaml:"poll_interval"`
 	BackfillWindow time.Duration      `yaml:"backfill_window"`
+	IngestionLag   time.Duration      `yaml:"ingestion_lag"`
 }
 
 // ZoneConfig identifies a single Cloudflare zone to monitor.
@@ -64,11 +68,14 @@ type AccountConfig struct {
 
 // WebAnalyticsConfig holds RUM / Web Analytics collection settings. The RUM
 // datasets are account-scoped, so all sites share one account_id and are
-// identified by their Web Analytics site tag.
+// identified by their Web Analytics site tag. IngestionLag is the page-load
+// window's lag behind now; RUM data lands well after the zone datasets, so it
+// is set separately from cloudflare.ingestion_lag.
 type WebAnalyticsConfig struct {
-	Enabled   bool         `yaml:"enabled"`
-	AccountID string       `yaml:"account_id"`
-	Sites     []SiteConfig `yaml:"sites"`
+	Enabled      bool          `yaml:"enabled"`
+	AccountID    string        `yaml:"account_id"`
+	Sites        []SiteConfig  `yaml:"sites"`
+	IngestionLag time.Duration `yaml:"ingestion_lag"`
 }
 
 // SiteConfig identifies a single Web Analytics site to collect RUM data from.
@@ -149,6 +156,12 @@ func (c *Config) applyDefaults() {
 	if c.Cloudflare.BackfillWindow == 0 {
 		c.Cloudflare.BackfillWindow = 1 * time.Hour
 	}
+	if c.Cloudflare.IngestionLag == 0 {
+		c.Cloudflare.IngestionLag = 3 * time.Minute
+	}
+	if c.Cloudflare.WebAnalytics.IngestionLag == 0 {
+		c.Cloudflare.WebAnalytics.IngestionLag = 10 * time.Minute
+	}
 	if c.Loki.TenantID == "" {
 		c.Loki.TenantID = "fake"
 	}
@@ -179,7 +192,8 @@ func (c *Config) validate() error {
 	return errors.Join(errs...)
 }
 
-// validateCloudflare checks the required Cloudflare fields and per-zone values.
+// validateCloudflare checks the required Cloudflare fields, per-zone values,
+// and the zone datasets' ingestion lag.
 func (c *Config) validateCloudflare() []error {
 	var errs []error
 	if c.Cloudflare.APIToken == "" {
@@ -188,14 +202,10 @@ func (c *Config) validateCloudflare() []error {
 	if len(c.Cloudflare.Zones) == 0 && !c.Cloudflare.AuditLogs.Enabled && !c.Cloudflare.WebAnalytics.Enabled {
 		errs = append(errs, fmt.Errorf("cloudflare.zones requires at least one zone"))
 	}
-	for i, z := range c.Cloudflare.Zones {
-		if z.ID == "" {
-			errs = append(errs, fmt.Errorf("cloudflare.zones[%d].id is required", i))
-		}
-		if z.Name == "" {
-			errs = append(errs, fmt.Errorf("cloudflare.zones[%d].name is required", i))
-		}
-	}
+	errs = append(errs, requireFields("cloudflare.zones", c.Cloudflare.Zones, func(z ZoneConfig) []requiredField {
+		return []requiredField{{"id", z.ID}, {"name", z.Name}}
+	})...)
+	errs = append(errs, c.validateLag("cloudflare.ingestion_lag", c.Cloudflare.IngestionLag)...)
 	return errs
 }
 
@@ -208,18 +218,14 @@ func (c *Config) validateAuditLogs() []error {
 	if len(c.Cloudflare.AuditLogs.Accounts) == 0 {
 		errs = append(errs, fmt.Errorf("cloudflare.audit_logs.accounts requires at least one account when enabled"))
 	}
-	for i, a := range c.Cloudflare.AuditLogs.Accounts {
-		if a.ID == "" {
-			errs = append(errs, fmt.Errorf("cloudflare.audit_logs.accounts[%d].id is required", i))
-		}
-		if a.Name == "" {
-			errs = append(errs, fmt.Errorf("cloudflare.audit_logs.accounts[%d].name is required", i))
-		}
-	}
+	errs = append(errs, requireFields("cloudflare.audit_logs.accounts", c.Cloudflare.AuditLogs.Accounts, func(a AccountConfig) []requiredField {
+		return []requiredField{{"id", a.ID}, {"name", a.Name}}
+	})...)
 	return errs
 }
 
-// validateWebAnalytics checks the Web Analytics sites when collection is enabled.
+// validateWebAnalytics checks the Web Analytics sites and their ingestion lag
+// when collection is enabled.
 func (c *Config) validateWebAnalytics() []error {
 	if !c.Cloudflare.WebAnalytics.Enabled {
 		return nil
@@ -231,12 +237,48 @@ func (c *Config) validateWebAnalytics() []error {
 	if len(c.Cloudflare.WebAnalytics.Sites) == 0 {
 		errs = append(errs, fmt.Errorf("cloudflare.web_analytics.sites requires at least one site when enabled"))
 	}
-	for i, s := range c.Cloudflare.WebAnalytics.Sites {
-		if s.SiteTag == "" {
-			errs = append(errs, fmt.Errorf("cloudflare.web_analytics.sites[%d].site_tag is required", i))
-		}
-		if s.Name == "" {
-			errs = append(errs, fmt.Errorf("cloudflare.web_analytics.sites[%d].name is required", i))
+	errs = append(errs, requireFields("cloudflare.web_analytics.sites", c.Cloudflare.WebAnalytics.Sites, func(s SiteConfig) []requiredField {
+		return []requiredField{{"site_tag", s.SiteTag}, {"name", s.Name}}
+	})...)
+	errs = append(errs, c.validateLag("cloudflare.web_analytics.ingestion_lag", c.Cloudflare.WebAnalytics.IngestionLag)...)
+	return errs
+}
+
+// validateLag checks an ingestion lag at the given config path. It must not be
+// negative, and it must be shorter than the backfill window: the cursor starts
+// one backfill window back, so a lag at least that long leaves the startup
+// backfill nothing to collect.
+func (c *Config) validateLag(path string, lag time.Duration) []error {
+	if lag < 0 {
+		return []error{fmt.Errorf("%s must not be negative", path)}
+	}
+	if lag >= c.Cloudflare.BackfillWindow {
+		return []error{fmt.Errorf("%s (%s) must be less than cloudflare.backfill_window (%s)", path, lag, c.Cloudflare.BackfillWindow)}
+	}
+	return nil
+}
+
+// -------------------------------------------------------------------------
+// LIST VALIDATION
+// -------------------------------------------------------------------------
+
+// requiredField is one field a config list item must set: its YAML key and its
+// value for that item.
+type requiredField struct {
+	key   string
+	value string
+}
+
+// requireFields reports every required field left empty across a config list,
+// as "<path>[<index>].<key> is required". fields returns an item's required
+// fields in the order they should be reported.
+func requireFields[T any](path string, items []T, fields func(T) []requiredField) []error {
+	var errs []error
+	for i, item := range items {
+		for _, f := range fields(item) {
+			if f.value == "" {
+				errs = append(errs, fmt.Errorf("%s[%d].%s is required", path, i, f.key))
+			}
 		}
 	}
 	return errs

@@ -4,13 +4,13 @@
 // Author: Alex Freidah
 //
 // What every collector shares, whatever it polls. CommonConfig is the settings
-// half: the Loki client and batch size it ships with and its poll schedule,
-// built once by main.go and handed to every collector. base is the run-time
-// half each collector embeds: those settings plus the collector's identity (its
-// display name, the zone/account/site it polls, and its Loki stream), and the
-// behavior that follows from them - scheduling polls and recording their
-// outcome. Collectors keep only what is theirs: a querier, their IDs, and their
-// cursor state.
+// half: the Loki client and batch size it ships with, its poll schedule, and
+// its ingestion lag, built by main.go and handed to every collector. base is
+// the run-time half each collector embeds: those settings plus the collector's
+// identity (its display name, the zone/account/site it polls, and its Loki
+// stream), and the behavior that follows from them - scheduling polls, sizing
+// their windows, and recording their outcome. Collectors keep only what is
+// theirs: a querier, their IDs, and their cursor state.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -34,10 +34,14 @@ import (
 // CommonConfig holds the settings every collector shares. Loki is a
 // consumer-declared interface, not a concrete pointer, so the composition root
 // (main.go) passes the real *loki.Client while tests substitute fakes.
+// IngestionLag holds a cursor-based poll's window end back from now so
+// Cloudflare has finished ingesting the window before it is read; it differs
+// by dataset, so main.go sets it per collector.
 type CommonConfig struct {
 	Loki           logPusher
 	PollInterval   time.Duration
 	BackfillWindow time.Duration
+	IngestionLag   time.Duration
 	BatchSize      int
 }
 
@@ -46,36 +50,32 @@ type CommonConfig struct {
 // -------------------------------------------------------------------------
 
 // identity names a collector and what it polls. It is fixed at construction
-// and labels everything the collector emits.
+// and labels everything the collector emits. name is the display name used in
+// log lines (e.g. "Firewall"). stream is the Loki stream's type label; it
+// usually matches the dataset name, but not always - HTTP traffic ships as
+// "http_traffic". scopeKey says what kind of thing is polled ("zone",
+// "account", "site") and scope names it; together they label log lines, spans,
+// and the Loki stream, and scope alone labels metrics. record describes one
+// shipped record, for marshal-failure warnings.
 type identity struct {
-	// name is the display name used in log lines, e.g. "Firewall".
-	name string
-
-	// stream is the Loki stream's type label. It usually matches the dataset
-	// name, but not always: HTTP traffic ships as "http_traffic".
-	stream string
-
-	// scopeKey says what kind of thing is polled ("zone", "account", "site")
-	// and scope names it; together they label log lines, spans, and the Loki
-	// stream, and scope alone labels metrics.
+	name     string
+	stream   string
 	scopeKey string
 	scope    string
-
-	// record describes one shipped record, for marshal-failure warnings.
-	record string
+	record   string
 }
 
-// base is the state and behavior every collector embeds.
+// base is the state and behavior every collector embeds: its identity, the
+// shared settings, and labels, the Loki stream labels built once from the
+// identity.
 type base struct {
 	identity
-
 	loki           logPusher
 	batchSize      int
 	pollInterval   time.Duration
 	backfillWindow time.Duration
-
-	// labels are the Loki stream labels, built once from the identity.
-	labels map[string]string
+	ingestionLag   time.Duration
+	labels         map[string]string
 }
 
 // newBase builds a collector base from the shared settings and the collector's
@@ -87,6 +87,7 @@ func newBase(cfg CommonConfig, id identity) base {
 		batchSize:      cfg.BatchSize,
 		pollInterval:   cfg.PollInterval,
 		backfillWindow: cfg.BackfillWindow,
+		ingestionLag:   cfg.IngestionLag,
 		labels: map[string]string{
 			"job":       "cloudflare",
 			"type":      id.stream,
@@ -99,6 +100,15 @@ func newBase(cfg CommonConfig, id identity) base {
 // before now, so a restart re-collects the recent past it may have missed.
 func (b *base) cursorStart() time.Time {
 	return time.Now().UTC().Add(-b.backfillWindow)
+}
+
+// pollWindow returns the end of the next poll window for a cursor at since:
+// now held back by the ingestion lag, so the window only covers data Cloudflare
+// has finished ingesting. ok is false when that end is not after the cursor -
+// the window is empty, so the poll is skipped and the cursor stays put.
+func (b *base) pollWindow(now, since time.Time) (until time.Time, ok bool) {
+	until = now.UTC().Add(-b.ingestionLag)
+	return until, until.After(since)
 }
 
 // scopeAttr is the span attribute naming what this collector polls, e.g.

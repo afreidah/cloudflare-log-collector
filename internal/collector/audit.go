@@ -4,24 +4,21 @@
 // Author: Aaron Florey
 //
 // Polls the Cloudflare Account Audit Logs REST API on a configurable interval
-// and ships events to Loki as structured JSON log lines. Tracks the last-seen
-// event timestamp as a seek cursor and dedupes the inclusive `since` boundary
-// by event ID so no event ships twice across polls. Each poll cycle is wrapped
-// in an OpenTelemetry span for trace correlation.
+// and ships events to Loki as structured JSON log lines. Its seek cursor follows
+// the last event shipped (see cursor.go), and the inclusive `since` boundary is
+// deduped by event ID so no event ships twice across polls. Each cycle runs
+// through the shared cursor-based poll in poll.go.
 // -------------------------------------------------------------------------------
 
 package collector
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
-
-	"go.opentelemetry.io/otel/attribute"
 )
 
 // -------------------------------------------------------------------------
@@ -44,16 +41,15 @@ type AuditCollectorConfig struct {
 // -------------------------------------------------------------------------
 
 // AuditCollector polls Cloudflare for account audit logs and ships them to
-// Loki. The base's scope is the account name.
+// Loki. The base's scope is the account name. shippedAtCursor holds the IDs of
+// events already shipped at the lastSeen boundary, so they can be dropped if
+// the API returns them again; see dropAlreadyShipped for why audit needs this
+// and firewall does not.
 type AuditCollector struct {
 	base
-	cf        auditQuerier
-	accountID string
-	lastSeen  time.Time
-
-	// shippedAtCursor holds the IDs of events already shipped at the lastSeen
-	// boundary, so they can be dropped if the API returns them again. See
-	// dropAlreadyShipped for why audit needs this and firewall does not.
+	cf              auditQuerier
+	accountID       string
+	lastSeen        time.Time
 	shippedAtCursor map[string]struct{}
 }
 
@@ -81,58 +77,35 @@ func (c *AuditCollector) Run(ctx context.Context) error {
 	return c.run(ctx, c.lastSeen, c.poll)
 }
 
-// poll executes a single audit log collection cycle within a traced span.
+// poll runs one audit log poll cycle. The cursor moves to the last event
+// shipped, and the IDs sharing that timestamp are recorded so the next poll
+// can drop them if the API returns them again.
 func (c *AuditCollector) poll(ctx context.Context) {
-	ctx, span := telemetry.StartSpan(ctx, "audit.poll",
-		telemetry.AttrDataset.String(DatasetAudit.String()),
-		c.scopeAttr(),
-	)
-	defer span.End()
+	pollCursor(ctx, &c.base, cursorPoll[cloudflare.AuditLogEvent]{
+		dataset:   DatasetAudit,
+		span:      "audit.poll",
+		title:     "Audit events",
+		countAttr: telemetry.AttrEventCount,
+		cursor:    &c.lastSeen,
+		advancer:  lastEvent[cloudflare.AuditLogEvent]{timestamp: auditEventTime},
+		query: func(ctx context.Context, since, before time.Time) ([]cloudflare.AuditLogEvent, error) {
+			return c.cf.QueryAuditLogs(ctx, c.accountID, since, before)
+		},
+		filter: c.dropAlreadyShipped,
+		count: func(events []cloudflare.AuditLogEvent) {
+			for i := range events {
+				metrics.AuditEventsTotal.WithLabelValues(events[i].Action.Type, c.scope).Inc()
+			}
+		},
+		advanced: func(events []cloudflare.AuditLogEvent) {
+			c.shippedAtCursor = boundaryIDs(events, auditEventTime(events[len(events)-1]))
+		},
+	})
+}
 
-	start := time.Now()
-	before := time.Now().UTC()
-
-	events, err := c.cf.QueryAuditLogs(ctx, c.accountID, c.lastSeen, before)
-	c.recordPoll(DatasetAudit, start, err)
-	if err != nil {
-		c.fail(ctx, span, "Audit poll failed", err)
-		return
-	}
-
-	// Drop events already shipped at the previous cursor boundary.
-	events = c.dropAlreadyShipped(events)
-
-	span.SetAttributes(attribute.Int("cflog.event_count", len(events)))
-
-	if len(events) == 0 {
-		slog.DebugContext(ctx, "No new audit events", "account", c.scope)
-		return
-	}
-
-	slog.InfoContext(ctx, "Audit events fetched", "account", c.scope, "count", len(events))
-
-	// --- Ship events to Loki in batches, then count them and advance ---
-	if err := shipThenCommit(ctx, &c.base, events, func() {
-		for i := range events {
-			metrics.AuditEventsTotal.WithLabelValues(events[i].Action.Type, c.scope).Inc()
-		}
-
-		// Advance cursor to the last event's timestamp and record the IDs sharing
-		// that timestamp so the next poll can drop them if the API returns them again.
-		lastEvent := events[len(events)-1]
-		if t, ok := parseEventTime(lastEvent.Action.Time); ok {
-			c.lastSeen = t
-			c.shippedAtCursor = boundaryIDs(events, lastEvent.Action.Time)
-		} else {
-			slog.WarnContext(ctx, "Unparseable audit event timestamp, cursor not advanced",
-				"account", c.scope, "time", lastEvent.Action.Time)
-		}
-	}); err != nil {
-		c.fail(ctx, span, "Failed to ship audit events to Loki", err)
-		return
-	}
-
-	slog.InfoContext(ctx, "Audit events pushed to Loki", "account", c.scope, "count", len(events))
+// auditEventTime is an audit event's timestamp, which the cursor follows.
+func auditEventTime(e cloudflare.AuditLogEvent) string {
+	return e.Action.Time
 }
 
 // dropAlreadyShipped removes events already shipped on a previous poll. The

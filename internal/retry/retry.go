@@ -28,15 +28,13 @@ import (
 
 // Policy is a retry policy: how many times to retry a retryable response and
 // the backoff between attempts. It is a value rather than constants so tests
-// can retry on a millisecond scale.
+// can retry on a millisecond scale. MaxRetries is the number of additional
+// attempts after the initial request for retryable HTTP status codes (429, 502,
+// 503, 504). BaseDelay is the backoff before the first retry; it doubles on
+// each retry after that unless the server sends Retry-After.
 type Policy struct {
-	// MaxRetries is the number of additional attempts after the initial
-	// request for retryable HTTP status codes (429, 502, 503, 504).
 	MaxRetries int
-
-	// BaseDelay is the backoff before the first retry; it doubles on each
-	// retry after that unless the server sends Retry-After.
-	BaseDelay time.Duration
+	BaseDelay  time.Duration
 }
 
 // Default is the policy the clients use in production.

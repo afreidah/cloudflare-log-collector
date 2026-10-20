@@ -148,6 +148,20 @@ func TestDefaults_BackfillWindow(t *testing.T) {
 	}
 }
 
+func TestDefaults_IngestionLags(t *testing.T) {
+	cfg := validConfig()
+	if err := cfg.setDefaultsAndValidate(); err != nil {
+		t.Fatalf("setDefaultsAndValidate() error = %v", err)
+	}
+
+	if cfg.Cloudflare.IngestionLag != 3*time.Minute {
+		t.Errorf("ingestion_lag = %v, want %v", cfg.Cloudflare.IngestionLag, 3*time.Minute)
+	}
+	if cfg.Cloudflare.WebAnalytics.IngestionLag != 10*time.Minute {
+		t.Errorf("web_analytics.ingestion_lag = %v, want %v", cfg.Cloudflare.WebAnalytics.IngestionLag, 10*time.Minute)
+	}
+}
+
 func TestDefaults_LokiTenantID(t *testing.T) {
 	cfg := validConfig()
 	if err := cfg.setDefaultsAndValidate(); err != nil {
@@ -337,6 +351,66 @@ func TestValidation_WebAnalyticsOnlyIsValid(t *testing.T) {
 
 	if err := cfg.setDefaultsAndValidate(); err != nil {
 		t.Errorf("web-analytics-only config should be valid, got: %v", err)
+	}
+}
+
+func TestValidation_IngestionLag(t *testing.T) {
+	tests := []struct {
+		name    string
+		lag     time.Duration
+		rumLag  time.Duration
+		wantErr string
+	}{
+		{name: "negative zone lag", lag: -time.Minute, wantErr: "cloudflare.ingestion_lag must not be negative"},
+		{name: "zone lag at backfill window", lag: time.Hour, wantErr: "cloudflare.ingestion_lag (1h0m0s) must be less than"},
+		{name: "rum lag past backfill window", rumLag: 2 * time.Hour, wantErr: "cloudflare.web_analytics.ingestion_lag (2h0m0s) must be less than"},
+		{name: "explicit lags inside the window", lag: 5 * time.Minute, rumLag: 15 * time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Cloudflare.IngestionLag = tt.lag
+			cfg.Cloudflare.WebAnalytics = WebAnalyticsConfig{
+				Enabled:      true,
+				AccountID:    "acct1",
+				Sites:        []SiteConfig{{SiteTag: "s1", Name: "example.com"}},
+				IngestionLag: tt.rumLag,
+			}
+
+			err := cfg.setDefaultsAndValidate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %v, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidation_RequiredFieldsReportIndexAndKey(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cloudflare.Zones = []ZoneConfig{{ID: "z1", Name: "a.com"}, {Name: "b.com"}}
+	cfg.Cloudflare.AuditLogs = AuditLogsConfig{Enabled: true, Accounts: []AccountConfig{{ID: "a1"}}}
+
+	err := cfg.setDefaultsAndValidate()
+	if err == nil {
+		t.Fatal("expected missing-field errors")
+	}
+	for _, want := range []string{
+		"cloudflare.zones[1].id is required",
+		"cloudflare.audit_logs.accounts[0].name is required",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "zones[0]") {
+		t.Errorf("err = %v, the complete zone[0] must not be reported", err)
 	}
 }
 

@@ -22,12 +22,11 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+// auditLogsEndpoint is the Cloudflare Audit Logs REST API URL template, and
+// auditQueryLimit the maximum number of audit log entries requested per page.
 const (
-	// auditLogsEndpoint is the Cloudflare Audit Logs REST API URL template.
 	auditLogsEndpoint = "https://api.cloudflare.com/client/v4/accounts/%s/logs/audit"
-
-	// auditQueryLimit is the maximum number of audit log entries requested per page.
-	auditQueryLimit = 1000
+	auditQueryLimit   = 1000
 )
 
 // AuditLogEvent represents a single account audit log entry from Cloudflare.
