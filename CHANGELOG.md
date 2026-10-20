@@ -3,6 +3,19 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.22](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.21...v0.1.22) (2026-10-20)
+
+
+### Features
+
+* **collector:** hold poll windows back by a per-dataset ingestion lag ([#112](https://github.com/afreidah/cloudflare-log-collector/issues/112)) ([4e0964f](https://github.com/afreidah/cloudflare-log-collector/commit/4e0964f394859d37cd729eda306eb7964816f1f7)), closes [#98](https://github.com/afreidah/cloudflare-log-collector/issues/98)
+* **web:** emit the Cloudflare Web Analytics beacon on the docs site ([#108](https://github.com/afreidah/cloudflare-log-collector/issues/108)) ([4e4796c](https://github.com/afreidah/cloudflare-log-collector/commit/4e4796cc32486644732cfe81e3ea0e8270d88f83))
+
+
+### Bug Fixes
+
+* **collector:** commit a poll window only after Loki accepts it ([#111](https://github.com/afreidah/cloudflare-log-collector/issues/111)) ([18a51c9](https://github.com/afreidah/cloudflare-log-collector/commit/18a51c93de1b0a928854b6fbb7d982f7e1fb1cde)), closes [#97](https://github.com/afreidah/cloudflare-log-collector/issues/97)
+
 ## [0.1.21](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.20...v0.1.21) (2026-08-13)
 
 
