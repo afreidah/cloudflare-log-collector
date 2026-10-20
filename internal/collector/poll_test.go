@@ -13,6 +13,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/loki"
+	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 )
 
 // -------------------------------------------------------------------------
@@ -43,6 +45,17 @@ func mockLokiServer(t *testing.T, requestCount *int) *httptest.Server {
 		*requestCount++
 		w.WriteHeader(http.StatusNoContent)
 	}))
+}
+
+// pollTestConfig builds the zone config the poll tests share: the real
+// Cloudflare and Loki clients pointed at the given test servers.
+func pollTestConfig(cfURL, lokiURL string) ZoneCollectorConfig {
+	return ZoneCollectorConfig{
+		CommonConfig: testCommon(loki.NewClient(lokiURL, "fake")),
+		CF:           cloudflare.NewTestClient(cfURL, "test-token"),
+		ZoneID:       "zone1",
+		ZoneName:     "example.com",
+	}
 }
 
 // cfFirewallResponse builds a GraphQL response containing the given events.
@@ -87,15 +100,8 @@ func TestFirewallRun_InitialPollThenCancel(t *testing.T) {
 	lokiServer := mockLokiServer(t, &lokiRequests)
 	t.Cleanup(lokiServer.Close)
 
-	cfg := CollectorConfig{
-		CF:             cloudflare.NewTestClient(cfServer.URL, "test-token"),
-		Loki:           loki.NewClient(lokiServer.URL, "fake"),
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Hour,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
-	}
+	cfg := pollTestConfig(cfServer.URL, lokiServer.URL)
+	cfg.PollInterval = time.Hour // only the initial poll runs before cancel
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -135,15 +141,8 @@ func TestHTTPRun_InitialPollThenCancel(t *testing.T) {
 	lokiServer := mockLokiServer(t, &lokiRequests)
 	t.Cleanup(lokiServer.Close)
 
-	cfg := CollectorConfig{
-		CF:             cloudflare.NewTestClient(cfServer.URL, "test-token"),
-		Loki:           loki.NewClient(lokiServer.URL, "fake"),
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Hour,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
-	}
+	cfg := pollTestConfig(cfServer.URL, lokiServer.URL)
+	cfg.PollInterval = time.Hour // only the initial poll runs before cancel
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -186,15 +185,7 @@ func TestFirewallPoll_Success(t *testing.T) {
 	lokiServer := mockLokiServer(t, &lokiRequests)
 	t.Cleanup(lokiServer.Close)
 
-	cfg := CollectorConfig{
-		CF:             cloudflare.NewTestClient(cfServer.URL, "test-token"),
-		Loki:           loki.NewClient(lokiServer.URL, "fake"),
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
-	}
+	cfg := pollTestConfig(cfServer.URL, lokiServer.URL)
 
 	c := NewFirewallCollector(cfg)
 	c.poll(context.Background())
@@ -212,15 +203,7 @@ func TestFirewallPoll_NoEvents(t *testing.T) {
 	lokiServer := mockLokiServer(t, &lokiRequests)
 	t.Cleanup(lokiServer.Close)
 
-	cfg := CollectorConfig{
-		CF:             cloudflare.NewTestClient(cfServer.URL, "test-token"),
-		Loki:           loki.NewClient(lokiServer.URL, "fake"),
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
-	}
+	cfg := pollTestConfig(cfServer.URL, lokiServer.URL)
 
 	c := NewFirewallCollector(cfg)
 	c.poll(context.Background())
@@ -240,15 +223,7 @@ func TestFirewallPoll_CFError(t *testing.T) {
 	lokiServer := mockLokiServer(t, &lokiRequests)
 	t.Cleanup(lokiServer.Close)
 
-	cfg := CollectorConfig{
-		CF:             cloudflare.NewTestClient(cfServer.URL, "test-token"),
-		Loki:           loki.NewClient(lokiServer.URL, "fake"),
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
-	}
+	cfg := pollTestConfig(cfServer.URL, lokiServer.URL)
 
 	c := NewFirewallCollector(cfg)
 	c.poll(context.Background())
@@ -271,15 +246,7 @@ func TestFirewallPoll_AdvancesCursor(t *testing.T) {
 	lokiServer := mockLokiServer(t, &lokiRequests)
 	t.Cleanup(lokiServer.Close)
 
-	cfg := CollectorConfig{
-		CF:             cloudflare.NewTestClient(cfServer.URL, "test-token"),
-		Loki:           loki.NewClient(lokiServer.URL, "fake"),
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
-	}
+	cfg := pollTestConfig(cfServer.URL, lokiServer.URL)
 
 	c := NewFirewallCollector(cfg)
 	before := c.lastSeen
@@ -318,15 +285,7 @@ func TestHTTPPoll_Success(t *testing.T) {
 	lokiServer := mockLokiServer(t, &lokiRequests)
 	t.Cleanup(lokiServer.Close)
 
-	cfg := CollectorConfig{
-		CF:             cloudflare.NewTestClient(cfServer.URL, "test-token"),
-		Loki:           loki.NewClient(lokiServer.URL, "fake"),
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
-	}
+	cfg := pollTestConfig(cfServer.URL, lokiServer.URL)
 
 	c := NewHTTPCollector(cfg)
 	c.poll(context.Background())
@@ -344,15 +303,7 @@ func TestHTTPPoll_NoGroups(t *testing.T) {
 	lokiServer := mockLokiServer(t, &lokiRequests)
 	t.Cleanup(lokiServer.Close)
 
-	cfg := CollectorConfig{
-		CF:             cloudflare.NewTestClient(cfServer.URL, "test-token"),
-		Loki:           loki.NewClient(lokiServer.URL, "fake"),
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
-	}
+	cfg := pollTestConfig(cfServer.URL, lokiServer.URL)
 
 	c := NewHTTPCollector(cfg)
 	before := c.lastSeen
@@ -378,15 +329,7 @@ func TestHTTPPoll_CFError(t *testing.T) {
 	lokiServer := mockLokiServer(t, &lokiRequests)
 	t.Cleanup(lokiServer.Close)
 
-	cfg := CollectorConfig{
-		CF:             cloudflare.NewTestClient(cfServer.URL, "test-token"),
-		Loki:           loki.NewClient(lokiServer.URL, "fake"),
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
-	}
+	cfg := pollTestConfig(cfServer.URL, lokiServer.URL)
 
 	c := NewHTTPCollector(cfg)
 	c.poll(context.Background())
@@ -397,6 +340,9 @@ func TestHTTPPoll_CFError(t *testing.T) {
 }
 
 func TestHTTPPoll_LokiError_DoesNotAdvanceCursor(t *testing.T) {
+	metrics.HTTPRequestsTotal.Reset()
+	metrics.HTTPBytesTotal.Reset()
+
 	groups := []cloudflare.HTTPRequestGroup{
 		{
 			Count: 10,
@@ -417,15 +363,7 @@ func TestHTTPPoll_LokiError_DoesNotAdvanceCursor(t *testing.T) {
 	}))
 	t.Cleanup(lokiServer.Close)
 
-	cfg := CollectorConfig{
-		CF:             cloudflare.NewTestClient(cfServer.URL, "test-token"),
-		Loki:           loki.NewClient(lokiServer.URL, "fake"),
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
-	}
+	cfg := pollTestConfig(cfServer.URL, lokiServer.URL)
 
 	c := NewHTTPCollector(cfg)
 	before := c.lastSeen
@@ -433,5 +371,53 @@ func TestHTTPPoll_LokiError_DoesNotAdvanceCursor(t *testing.T) {
 
 	if c.lastSeen != before {
 		t.Error("lastSeen should not advance when Loki push fails")
+	}
+
+	// The window was not shipped, so it must not be counted either.
+	assertCounterValue(t, metrics.HTTPRequestsTotal.WithLabelValues("GET", "200", "", "example.com"), 0)
+	assertCounterValue(t, metrics.HTTPBytesTotal.WithLabelValues("edge", "example.com"), 0)
+}
+
+// TestHTTPPoll_LokiRecovers_CountsWindowOnce is the regression test for the
+// double count: a window whose push fails is re-queried on the next poll, and
+// its counts must land exactly once when that retry succeeds.
+func TestHTTPPoll_LokiRecovers_CountsWindowOnce(t *testing.T) {
+	metrics.HTTPRequestsTotal.Reset()
+	metrics.HTTPBytesTotal.Reset()
+
+	cf := &fakeCloudflare{
+		httpGroups: []cloudflare.HTTPRequestGroup{
+			{
+				Count: 10,
+				Dimensions: cloudflare.HTTPRequestDimensions{
+					ClientRequestHTTPMethodName: "GET",
+					EdgeResponseStatus:          200,
+					ClientCountryName:           "US",
+				},
+				Sum: cloudflare.HTTPRequestSum{EdgeResponseBytes: 5000},
+			},
+		},
+	}
+	push := &fakePusher{err: errors.New("loki down")}
+
+	c := NewHTTPCollector(ZoneCollectorConfig{
+		CommonConfig: testCommon(push),
+		CF:           cf,
+		ZoneID:       "zone1",
+		ZoneName:     "example.com",
+	})
+
+	// First poll: Loki rejects the push, so nothing is counted.
+	c.poll(context.Background())
+	assertCounterValue(t, metrics.HTTPRequestsTotal.WithLabelValues("GET", "200", "US", "example.com"), 0)
+
+	// Second poll: Loki is back and the same window comes round again.
+	push.err = nil
+	c.poll(context.Background())
+
+	assertCounterValue(t, metrics.HTTPRequestsTotal.WithLabelValues("GET", "200", "US", "example.com"), 10)
+	assertCounterValue(t, metrics.HTTPBytesTotal.WithLabelValues("edge", "example.com"), 5000)
+	if cf.httpCalls != 2 {
+		t.Errorf("http querier called %d times, want 2", cf.httpCalls)
 	}
 }

@@ -20,7 +20,6 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 )
 
 const (
@@ -122,8 +121,7 @@ func (c *Client) QueryAuditLogs(ctx context.Context, accountID string, since, be
 	for {
 		events, nextCursor, err := c.doAuditQuery(ctx, endpoint, since, before, cursor)
 		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
+			telemetry.FailSpan(span, err)
 			return nil, fmt.Errorf("audit logs query: %w", err)
 		}
 

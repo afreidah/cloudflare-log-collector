@@ -3,19 +3,21 @@
 //
 // Author: Alex Freidah
 //
-// Tests for span creation helpers. Verifies that StartSpan creates INTERNAL
-// spans (default) and StartClientSpan creates CLIENT spans for service graph
-// visibility in Tempo.
+// Tests for span helpers. Verifies that StartSpan creates INTERNAL spans
+// (default), StartClientSpan creates CLIENT spans for service graph visibility
+// in Tempo, and FailSpan marks a span failed with its cause.
 // -------------------------------------------------------------------------------
 
 package telemetry
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -118,5 +120,32 @@ func TestStartClientSpan_IsChildOfParent(t *testing.T) {
 
 	if childSpan.Parent.SpanID() != parentSpan.SpanContext.SpanID() {
 		t.Error("client span should be a child of the parent span")
+	}
+}
+
+// -------------------------------------------------------------------------
+// FAIL SPAN
+// -------------------------------------------------------------------------
+
+func TestFailSpan_RecordsErrorAndSetsStatus(t *testing.T) {
+	exporter := setupTestTracer(t)
+
+	_, span := StartSpan(context.Background(), "test.fail")
+	FailSpan(span, errors.New("boom"))
+	span.End()
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("got %d spans, want 1", len(spans))
+	}
+
+	if spans[0].Status.Code != codes.Error {
+		t.Errorf("status code = %v, want %v", spans[0].Status.Code, codes.Error)
+	}
+	if spans[0].Status.Description != "boom" {
+		t.Errorf("status description = %q, want %q", spans[0].Status.Description, "boom")
+	}
+	if len(spans[0].Events) != 1 || spans[0].Events[0].Name != "exception" {
+		t.Errorf("events = %v, want one recorded exception", spans[0].Events)
 	}
 }

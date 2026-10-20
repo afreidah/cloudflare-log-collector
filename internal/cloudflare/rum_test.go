@@ -20,20 +20,6 @@ import (
 	"time"
 )
 
-// rumDataResponse wraps the given account-node payload in the GraphQL data
-// envelope the client expects.
-func rumDataResponse(dataset string, groups any) map[string]any {
-	return map[string]any{
-		"data": map[string]any{
-			"viewer": map[string]any{
-				"accounts": []any{
-					map[string]any{dataset: groups},
-				},
-			},
-		},
-	}
-}
-
 // -------------------------------------------------------------------------
 // PAGE LOADS
 // -------------------------------------------------------------------------
@@ -54,7 +40,7 @@ func TestQueryRUMPageloads_Success(t *testing.T) {
 				Sum: RUMPageloadSum{Visits: 1},
 			},
 		}
-		writeJSON(t, w, rumDataResponse("rumPageloadEventsAdaptiveGroups", groups))
+		writeJSON(t, w, datasetResponse("accounts", "rumPageloadEventsAdaptiveGroups", groups))
 	}))
 	t.Cleanup(ts.Close)
 
@@ -143,7 +129,7 @@ func TestQueryRUMWebVitals_Success(t *testing.T) {
 				},
 			},
 		}
-		writeJSON(t, w, rumDataResponse("rumWebVitalsEventsAdaptiveGroups", groups))
+		writeJSON(t, w, datasetResponse("accounts", "rumWebVitalsEventsAdaptiveGroups", groups))
 	}))
 	t.Cleanup(ts.Close)
 

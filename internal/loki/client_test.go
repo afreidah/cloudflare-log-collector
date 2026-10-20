@@ -5,7 +5,7 @@
 //
 // Tests for the Loki push API client using httptest servers to mock Loki
 // responses. Covers successful pushes, error handling, empty batch skipping,
-// and request payload verification.
+// request payload verification, and retrying under the client's retry policy.
 // -------------------------------------------------------------------------------
 
 package loki
@@ -19,6 +19,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/afreidah/cloudflare-log-collector/internal/retry"
 )
 
 // -------------------------------------------------------------------------
@@ -164,8 +166,62 @@ func TestPush_ServerDown(t *testing.T) {
 	}
 }
 
-// Retry policy (isRetryable, backoff, Retry-After) is shared and tested in
-// internal/retry.
+// -------------------------------------------------------------------------
+// RETRY
+// -------------------------------------------------------------------------
+
+// The retry policy itself (retryable statuses, backoff, Retry-After) is shared
+// and tested in internal/retry; these cover the client's use of it.
+
+func TestPush_RetriesRetryableStatusThenSucceeds(t *testing.T) {
+	var requests int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(ts.Close)
+
+	client := NewClient(ts.URL, "fake")
+	client.retryPolicy = retry.Policy{MaxRetries: 3, BaseDelay: time.Millisecond}
+
+	err := client.Push(context.Background(),
+		map[string]string{"job": "test"},
+		[]Entry{NewEntry(time.Now(), `{}`)},
+	)
+	if err != nil {
+		t.Fatalf("Push() error = %v, want success after one retry", err)
+	}
+	if requests != 2 {
+		t.Errorf("got %d requests, want 2 (one 503, one retry)", requests)
+	}
+}
+
+func TestPush_RetryBudgetSpentIsAnError(t *testing.T) {
+	var requests int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(ts.Close)
+
+	client := NewClient(ts.URL, "fake")
+	client.retryPolicy = retry.Policy{MaxRetries: 2, BaseDelay: time.Millisecond}
+
+	err := client.Push(context.Background(),
+		map[string]string{"job": "test"},
+		[]Entry{NewEntry(time.Now(), `{}`)},
+	)
+	if err == nil {
+		t.Fatal("expected an error once the retries are spent")
+	}
+	if requests != 3 {
+		t.Errorf("got %d requests, want 3 (initial + 2 retries)", requests)
+	}
+}
 
 // -------------------------------------------------------------------------
 // ENTRY

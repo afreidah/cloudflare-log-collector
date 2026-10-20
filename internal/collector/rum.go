@@ -25,7 +25,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 )
 
 // rumIngestionLag holds the page-load query window's leading edge back from
@@ -42,18 +41,15 @@ const rumIngestionLag = 10 * time.Minute
 // -------------------------------------------------------------------------
 
 // RUMCollectorConfig holds the parameters for constructing a RUM collector.
-// CF and Loki are consumer-declared interfaces, not concrete pointers, so the
-// composition root (main.go) passes the real clients while tests substitute
-// fakes. The concrete *cloudflare.Client and *loki.Client satisfy them.
+// CF is a consumer-declared interface, not a concrete pointer, so the
+// composition root (main.go) passes the real *cloudflare.Client while tests
+// substitute fakes.
 type RUMCollectorConfig struct {
-	CF             rumQuerier
-	Loki           logPusher
-	AccountID      string
-	SiteTag        string
-	SiteName       string
-	PollInterval   time.Duration
-	BackfillWindow time.Duration
-	BatchSize      int
+	CommonConfig
+	CF        rumQuerier
+	AccountID string
+	SiteTag   string
+	SiteName  string
 }
 
 // -------------------------------------------------------------------------
@@ -62,16 +58,12 @@ type RUMCollectorConfig struct {
 
 // RUMCollector polls Cloudflare Web Analytics for one site, shipping page-load
 // detail to Loki and page-view/session counters plus Core Web Vitals gauges to
-// Prometheus.
+// Prometheus. The base's scope is the site name.
 type RUMCollector struct {
-	cf             rumQuerier
-	loki           logPusher
-	accountID      string
-	siteTag        string
-	siteName       string
-	pollInterval   time.Duration
-	backfillWindow time.Duration
-	batchSize      int
+	base
+	cf        rumQuerier
+	accountID string
+	siteTag   string
 
 	// pageloadSeen is the seek cursor for the page-view counter stream. It
 	// advances only when a poll fully succeeds (queried, shipped, counted) so a
@@ -83,43 +75,26 @@ type RUMCollector struct {
 // NewRUMCollector creates a RUM collector for the given Web Analytics site with
 // the backfill window applied to the initial page-load poll.
 func NewRUMCollector(cfg RUMCollectorConfig) *RUMCollector {
-	return &RUMCollector{
-		cf:             cfg.CF,
-		loki:           cfg.Loki,
-		accountID:      cfg.AccountID,
-		siteTag:        cfg.SiteTag,
-		siteName:       cfg.SiteName,
-		pollInterval:   cfg.PollInterval,
-		backfillWindow: cfg.BackfillWindow,
-		batchSize:      cfg.BatchSize,
-		pageloadSeen:   time.Now().UTC().Add(-cfg.BackfillWindow),
+	c := &RUMCollector{
+		base: newBase(cfg.CommonConfig, identity{
+			name:     "RUM",
+			stream:   DatasetRUMPageload.String(),
+			scopeKey: "site",
+			scope:    cfg.SiteName,
+			record:   "RUM page load",
+		}),
+		cf:        cfg.CF,
+		accountID: cfg.AccountID,
+		siteTag:   cfg.SiteTag,
 	}
+	c.pageloadSeen = c.cursorStart()
+	return c
 }
 
-// Run starts the polling loop and blocks until ctx is cancelled. Implements
-// the lifecycle.Runner interface.
+// Run polls on the configured interval and blocks until ctx is cancelled.
+// Implements the lifecycle.Runner interface.
 func (c *RUMCollector) Run(ctx context.Context) error {
-	slog.Info("RUM collector started",
-		"site", c.siteName,
-		"poll_interval", c.pollInterval,
-		"backfill_from", c.pageloadSeen.Format(time.RFC3339),
-	)
-
-	// --- Initial poll on startup ---
-	c.poll(ctx)
-
-	ticker := time.NewTicker(c.pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("RUM collector stopped", "site", c.siteName)
-			return nil
-		case <-ticker.C:
-			c.poll(ctx)
-		}
-	}
+	return c.run(ctx, c.pageloadSeen, c.poll)
 }
 
 // poll runs both RUM datasets. They are independent: a failure in one does not
@@ -138,7 +113,7 @@ func (c *RUMCollector) poll(ctx context.Context) {
 func (c *RUMCollector) pollPageloads(ctx context.Context) {
 	ctx, span := telemetry.StartSpan(ctx, "rum.pageload.poll",
 		telemetry.AttrDataset.String(DatasetRUMPageload.String()),
-		attribute.String("cflog.site", c.siteName),
+		c.scopeAttr(),
 	)
 	defer span.End()
 
@@ -152,41 +127,30 @@ func (c *RUMCollector) pollPageloads(ctx context.Context) {
 	}
 
 	groups, err := c.cf.QueryRUMPageloads(ctx, c.accountID, c.siteTag, c.pageloadSeen, until)
+	c.recordPoll(DatasetRUMPageload, start, err)
 	if err != nil {
-		slog.ErrorContext(ctx, "RUM pageload poll failed", "site", c.siteName, "error", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		metrics.PollTotal.WithLabelValues(DatasetRUMPageload.String(), c.siteName, "error").Inc()
-		metrics.PollDuration.WithLabelValues(DatasetRUMPageload.String(), c.siteName).Observe(time.Since(start).Seconds())
+		c.fail(ctx, span, "RUM pageload poll failed", err)
 		return
 	}
-
-	metrics.PollTotal.WithLabelValues(DatasetRUMPageload.String(), c.siteName, "success").Inc()
-	metrics.PollDuration.WithLabelValues(DatasetRUMPageload.String(), c.siteName).Observe(time.Since(start).Seconds())
-	metrics.LastPollTimestamp.WithLabelValues(DatasetRUMPageload.String(), c.siteName).Set(float64(time.Now().Unix()))
 
 	span.SetAttributes(attribute.Int("cflog.group_count", len(groups)))
 
 	if len(groups) == 0 {
-		slog.DebugContext(ctx, "No new RUM page loads", "site", c.siteName)
+		slog.DebugContext(ctx, "No new RUM page loads", "site", c.scope)
 		c.pageloadSeen = until
 		return
 	}
 
-	// Ship raw rows to Loki before touching the counters: if the push fails the
-	// cursor stays put and the same window is re-queried next poll, so a page
-	// view is never counted without also being shipped (no double counting).
-	if err := c.shipPageloads(ctx, groups); err != nil {
-		slog.ErrorContext(ctx, "Failed to ship RUM page loads to Loki", "site", c.siteName, "error", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+	// Ship raw rows to Loki, then count the window and advance the cursor.
+	if err := shipThenCommit(ctx, &c.base, groups, func() {
+		c.updatePageloadMetrics(groups)
+		c.pageloadSeen = until
+	}); err != nil {
+		c.fail(ctx, span, "Failed to ship RUM page loads to Loki", err)
 		return
 	}
 
-	c.updatePageloadMetrics(groups)
-	c.pageloadSeen = until
-
-	slog.InfoContext(ctx, "RUM page loads collected", "site", c.siteName, "groups", len(groups))
+	slog.InfoContext(ctx, "RUM page loads collected", "site", c.scope, "groups", len(groups))
 }
 
 // updatePageloadMetrics accumulates page-view and session counters at bounded
@@ -194,23 +158,13 @@ func (c *RUMCollector) pollPageloads(ctx context.Context) {
 func (c *RUMCollector) updatePageloadMetrics(groups []cloudflare.RUMPageloadGroup) {
 	for i := range groups {
 		d := groups[i].Dimensions
-		metrics.RUMPageviewsTotal.WithLabelValues(d.CountryName, d.DeviceType, c.siteName).Add(float64(groups[i].Count))
+		metrics.RUMPageviewsTotal.WithLabelValues(d.CountryName, d.DeviceType, c.scope).Add(float64(groups[i].Count))
 		if visits := groups[i].Sum.Visits; visits > 0 {
-			metrics.RUMSessionsTotal.WithLabelValues(d.CountryName, d.DeviceType, c.siteName).Add(float64(visits))
+			metrics.RUMSessionsTotal.WithLabelValues(d.CountryName, d.DeviceType, c.scope).Add(float64(visits))
 		}
 	}
 }
 
-// shipPageloads sends raw page-load groups to Loki as JSON log lines in batches.
-func (c *RUMCollector) shipPageloads(ctx context.Context, groups []cloudflare.RUMPageloadGroup) error {
-	labels := map[string]string{
-		"job":  "cloudflare",
-		"type": DatasetRUMPageload.String(),
-		"site": c.siteName,
-	}
-
-	return shipJSON(ctx, c.loki, c.batchSize, labels, groups, "Failed to marshal RUM page load", "site", c.siteName)
-}
 
 // -------------------------------------------------------------------------
 // WEB VITALS (gauges, rolling window)
@@ -222,7 +176,7 @@ func (c *RUMCollector) shipPageloads(ctx context.Context, groups []cloudflare.RU
 func (c *RUMCollector) pollWebVitals(ctx context.Context) {
 	ctx, span := telemetry.StartSpan(ctx, "rum.webvitals.poll",
 		telemetry.AttrDataset.String(DatasetRUMWebVitals.String()),
-		attribute.String("cflog.site", c.siteName),
+		c.scopeAttr(),
 	)
 	defer span.End()
 
@@ -231,28 +185,21 @@ func (c *RUMCollector) pollWebVitals(ctx context.Context) {
 	since := until.Add(-c.backfillWindow)
 
 	groups, err := c.cf.QueryRUMWebVitals(ctx, c.accountID, c.siteTag, since, until)
+	c.recordPoll(DatasetRUMWebVitals, start, err)
 	if err != nil {
-		slog.ErrorContext(ctx, "RUM web vitals poll failed", "site", c.siteName, "error", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		metrics.PollTotal.WithLabelValues(DatasetRUMWebVitals.String(), c.siteName, "error").Inc()
-		metrics.PollDuration.WithLabelValues(DatasetRUMWebVitals.String(), c.siteName).Observe(time.Since(start).Seconds())
+		c.fail(ctx, span, "RUM web vitals poll failed", err)
 		return
 	}
-
-	metrics.PollTotal.WithLabelValues(DatasetRUMWebVitals.String(), c.siteName, "success").Inc()
-	metrics.PollDuration.WithLabelValues(DatasetRUMWebVitals.String(), c.siteName).Observe(time.Since(start).Seconds())
-	metrics.LastPollTimestamp.WithLabelValues(DatasetRUMWebVitals.String(), c.siteName).Set(float64(time.Now().Unix()))
 
 	span.SetAttributes(attribute.Int("cflog.group_count", len(groups)))
 
 	// Clear this site's vitals before repopulating so a device type absent from
 	// the latest window does not linger at a stale value.
-	metrics.RUMWebVitalSeconds.DeletePartialMatch(prometheus.Labels{"site": c.siteName})
-	metrics.RUMCumulativeLayoutShift.DeletePartialMatch(prometheus.Labels{"site": c.siteName})
+	metrics.RUMWebVitalSeconds.DeletePartialMatch(prometheus.Labels{"site": c.scope})
+	metrics.RUMCumulativeLayoutShift.DeletePartialMatch(prometheus.Labels{"site": c.scope})
 
 	c.updateWebVitalsMetrics(groups)
-	slog.DebugContext(ctx, "RUM web vitals collected", "site", c.siteName, "groups", len(groups))
+	slog.DebugContext(ctx, "RUM web vitals collected", "site", c.scope, "groups", len(groups))
 }
 
 // updateWebVitalsMetrics sets the per-device Core Web Vitals gauges from the
@@ -270,7 +217,7 @@ func (c *RUMCollector) updateWebVitalsMetrics(groups []cloudflare.RUMWebVitalsGr
 
 		// CLS is a unitless layout-shift score, not a duration.
 		if cls := q.CumulativeLayoutShiftP75; cls >= 0 {
-			metrics.RUMCumulativeLayoutShift.WithLabelValues(device, c.siteName).Set(cls)
+			metrics.RUMCumulativeLayoutShift.WithLabelValues(device, c.scope).Set(cls)
 		}
 	}
 }
@@ -282,5 +229,5 @@ func (c *RUMCollector) setTimeVital(vital, device string, microseconds float64) 
 	if microseconds < 0 {
 		return
 	}
-	metrics.RUMWebVitalSeconds.WithLabelValues(vital, device, c.siteName).Set(microseconds / 1e6)
+	metrics.RUMWebVitalSeconds.WithLabelValues(vital, device, c.scope).Set(microseconds / 1e6)
 }

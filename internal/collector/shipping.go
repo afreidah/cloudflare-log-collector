@@ -3,10 +3,12 @@
 //
 // Author: Alex Freidah
 //
-// Shared helper that every collector uses to ship a batch of records to Loki:
+// Shared helpers that every collector uses to ship a batch of records to Loki:
 // marshal each record to a JSON log line, then push the lines under the given
 // stream labels in batches. Each collector differs only in its record type and
-// stream labels, so the marshal-and-batch loop lives here once.
+// stream labels, so the marshal-and-batch loop lives here once, as does the
+// rule that a poll window is only committed (counted, cursor advanced) once it
+// has been shipped.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -19,6 +21,22 @@ import (
 
 	"github.com/afreidah/cloudflare-log-collector/internal/loki"
 )
+
+// shipThenCommit ships items to Loki on the collector's stream and, only once
+// every batch has been accepted, calls commit to apply the poll window's side
+// effects: counter increments and cursor advancement. A window whose push fails
+// is therefore neither counted nor skipped - the cursor stays put, the next
+// poll re-queries the same window, and its counts land exactly once. A nil
+// commit ships only.
+func shipThenCommit[T any](ctx context.Context, b *base, items []T, commit func()) error {
+	if err := shipJSON(ctx, b.loki, b.batchSize, b.labels, items, "Failed to marshal "+b.record, b.scopeKey, b.scope); err != nil {
+		return err
+	}
+	if commit != nil {
+		commit()
+	}
+	return nil
+}
 
 // shipJSON marshals each item to a JSON log line and pushes the lines to Loki
 // under labels, in batches of batchSize. Items that fail to marshal are logged

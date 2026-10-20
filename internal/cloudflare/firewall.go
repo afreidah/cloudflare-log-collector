@@ -11,14 +11,8 @@ package cloudflare
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"log/slog"
 	"time"
 )
-
-// firewallQueryLimit is the maximum number of firewall events returned per query.
-const firewallQueryLimit = 10000
 
 // FirewallEvent represents a single firewall/WAF event from Cloudflare.
 type FirewallEvent struct {
@@ -36,22 +30,18 @@ type FirewallEvent struct {
 	ClientCountryName           string `json:"clientCountryName"`
 }
 
-// firewallResponse maps the GraphQL response for firewallEventsAdaptive queries.
-type firewallResponse struct {
-	Viewer struct {
-		Zones []struct {
-			FirewallEventsAdaptive []FirewallEvent `json:"firewallEventsAdaptive"`
-		} `json:"zones"`
-	} `json:"viewer"`
-}
-
-// firewallQuery fetches individual firewall/WAF events ordered by time.
-const firewallQuery = `query ($zoneId: String!, $since: String!, $until: String!) {
+// firewallDataset fetches individual firewall/WAF events ordered by time, so
+// the collector's seek cursor can advance to the last event returned.
+var firewallDataset = dataset{
+	field: "firewallEventsAdaptive",
+	scope: "zones",
+	limit: 10000,
+	query: `query ($zoneId: String!, $since: String!, $until: String!, $limit: uint64!) {
   viewer {
     zones(filter: {zoneTag: $zoneId}) {
       firewallEventsAdaptive(
         filter: {datetime_gt: $since, datetime_leq: $until}
-        limit: 10000
+        limit: $limit
         orderBy: [datetime_ASC]
       ) {
         action clientIP clientRequestHTTPHost clientRequestHTTPMethodName
@@ -60,35 +50,11 @@ const firewallQuery = `query ($zoneId: String!, $since: String!, $until: String!
       }
     }
   }
-}`
+}`,
+}
 
 // QueryFirewallEvents fetches firewall events for the given zone and time range.
 func (c *Client) QueryFirewallEvents(ctx context.Context, zoneID string, since, until time.Time) ([]FirewallEvent, error) {
-	vars := map[string]any{
-		"zoneId": zoneID,
-		"since":  since.UTC().Format(time.RFC3339),
-		"until":  until.UTC().Format(time.RFC3339),
-	}
-
-	body, err := c.doQuery(ctx, zoneID, firewallQuery, vars)
-	if err != nil {
-		return nil, fmt.Errorf("firewall query: %w", err)
-	}
-
-	var resp firewallResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("firewall response parse: %w", err)
-	}
-
-	if len(resp.Viewer.Zones) == 0 {
-		return nil, nil
-	}
-
-	events := resp.Viewer.Zones[0].FirewallEventsAdaptive
-	if len(events) >= firewallQueryLimit {
-		slog.WarnContext(ctx, "Firewall query hit limit, events may be truncated",
-			"zone_id", zoneID, "limit", firewallQueryLimit, "count", len(events))
-	}
-
-	return events, nil
+	return queryDataset[FirewallEvent](ctx, c, firewallDataset, zoneID, since, until,
+		map[string]any{"zoneId": zoneID})
 }

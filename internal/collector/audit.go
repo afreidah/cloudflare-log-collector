@@ -22,7 +22,6 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 )
 
 // -------------------------------------------------------------------------
@@ -30,32 +29,27 @@ import (
 // -------------------------------------------------------------------------
 
 // AuditCollectorConfig holds the parameters for constructing an audit collector.
-// CF and Loki are consumer-declared interfaces, not concrete pointers, so the
-// composition root (main.go) passes the real clients while tests substitute
-// fakes. The concrete *cloudflare.Client and *loki.Client satisfy them.
+// CF is a consumer-declared interface, not a concrete pointer, so the
+// composition root (main.go) passes the real *cloudflare.Client while tests
+// substitute fakes.
 type AuditCollectorConfig struct {
-	CF             auditQuerier
-	Loki           logPusher
-	AccountID      string
-	AccountName    string
-	PollInterval   time.Duration
-	BackfillWindow time.Duration
-	BatchSize      int
+	CommonConfig
+	CF          auditQuerier
+	AccountID   string
+	AccountName string
 }
 
 // -------------------------------------------------------------------------
 // AUDIT COLLECTOR
 // -------------------------------------------------------------------------
 
-// AuditCollector polls Cloudflare for account audit logs and ships them to Loki.
+// AuditCollector polls Cloudflare for account audit logs and ships them to
+// Loki. The base's scope is the account name.
 type AuditCollector struct {
-	cf           auditQuerier
-	loki         logPusher
-	accountID    string
-	accountName  string
-	pollInterval time.Duration
-	lastSeen     time.Time
-	batchSize    int
+	base
+	cf        auditQuerier
+	accountID string
+	lastSeen  time.Time
 
 	// shippedAtCursor holds the IDs of events already shipped at the lastSeen
 	// boundary, so they can be dropped if the API returns them again. See
@@ -66,48 +60,32 @@ type AuditCollector struct {
 // NewAuditCollector creates an audit log collector for the given account
 // with the backfill window applied to the initial poll.
 func NewAuditCollector(cfg AuditCollectorConfig) *AuditCollector {
-	return &AuditCollector{
-		cf:           cfg.CF,
-		loki:         cfg.Loki,
-		accountID:    cfg.AccountID,
-		accountName:  cfg.AccountName,
-		pollInterval: cfg.PollInterval,
-		lastSeen:     time.Now().UTC().Add(-cfg.BackfillWindow),
-		batchSize:    cfg.BatchSize,
+	c := &AuditCollector{
+		base: newBase(cfg.CommonConfig, identity{
+			name:     "Audit",
+			stream:   DatasetAudit.String(),
+			scopeKey: "account",
+			scope:    cfg.AccountName,
+			record:   "audit event",
+		}),
+		cf:        cfg.CF,
+		accountID: cfg.AccountID,
 	}
+	c.lastSeen = c.cursorStart()
+	return c
 }
 
-// Run starts the polling loop and blocks until ctx is cancelled. Implements
-// the lifecycle.Service interface.
+// Run polls on the configured interval and blocks until ctx is cancelled.
+// Implements the lifecycle.Runner interface.
 func (c *AuditCollector) Run(ctx context.Context) error {
-	slog.Info("Audit collector started",
-		"account", c.accountName,
-		"poll_interval", c.pollInterval,
-		"backfill_from", c.lastSeen.Format(time.RFC3339),
-	)
-
-	// --- Initial poll on startup ---
-	c.poll(ctx)
-
-	ticker := time.NewTicker(c.pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("Audit collector stopped", "account", c.accountName)
-			return nil
-		case <-ticker.C:
-			c.poll(ctx)
-		}
-	}
+	return c.run(ctx, c.lastSeen, c.poll)
 }
 
 // poll executes a single audit log collection cycle within a traced span.
 func (c *AuditCollector) poll(ctx context.Context) {
 	ctx, span := telemetry.StartSpan(ctx, "audit.poll",
 		telemetry.AttrDataset.String(DatasetAudit.String()),
-		attribute.String("cflog.account", c.accountName),
+		c.scopeAttr(),
 	)
 	defer span.End()
 
@@ -115,18 +93,11 @@ func (c *AuditCollector) poll(ctx context.Context) {
 	before := time.Now().UTC()
 
 	events, err := c.cf.QueryAuditLogs(ctx, c.accountID, c.lastSeen, before)
+	c.recordPoll(DatasetAudit, start, err)
 	if err != nil {
-		slog.ErrorContext(ctx, "Audit poll failed", "account", c.accountName, "error", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		metrics.PollTotal.WithLabelValues(DatasetAudit.String(), c.accountName, "error").Inc()
-		metrics.PollDuration.WithLabelValues(DatasetAudit.String(), c.accountName).Observe(time.Since(start).Seconds())
+		c.fail(ctx, span, "Audit poll failed", err)
 		return
 	}
-
-	metrics.PollTotal.WithLabelValues(DatasetAudit.String(), c.accountName, "success").Inc()
-	metrics.PollDuration.WithLabelValues(DatasetAudit.String(), c.accountName).Observe(time.Since(start).Seconds())
-	metrics.LastPollTimestamp.WithLabelValues(DatasetAudit.String(), c.accountName).Set(float64(time.Now().Unix()))
 
 	// Drop events already shipped at the previous cursor boundary.
 	events = c.dropAlreadyShipped(events)
@@ -134,37 +105,34 @@ func (c *AuditCollector) poll(ctx context.Context) {
 	span.SetAttributes(attribute.Int("cflog.event_count", len(events)))
 
 	if len(events) == 0 {
-		slog.DebugContext(ctx, "No new audit events", "account", c.accountName)
+		slog.DebugContext(ctx, "No new audit events", "account", c.scope)
 		return
 	}
 
-	slog.InfoContext(ctx, "Audit events fetched", "account", c.accountName, "count", len(events))
+	slog.InfoContext(ctx, "Audit events fetched", "account", c.scope, "count", len(events))
 
-	// --- Ship events to Loki in batches ---
-	if err := c.shipToLoki(ctx, events); err != nil {
-		slog.ErrorContext(ctx, "Failed to ship audit events to Loki", "account", c.accountName, "error", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+	// --- Ship events to Loki in batches, then count them and advance ---
+	if err := shipThenCommit(ctx, &c.base, events, func() {
+		for i := range events {
+			metrics.AuditEventsTotal.WithLabelValues(events[i].Action.Type, c.scope).Inc()
+		}
+
+		// Advance cursor to the last event's timestamp and record the IDs sharing
+		// that timestamp so the next poll can drop them if the API returns them again.
+		lastEvent := events[len(events)-1]
+		if t, ok := parseEventTime(lastEvent.Action.Time); ok {
+			c.lastSeen = t
+			c.shippedAtCursor = boundaryIDs(events, lastEvent.Action.Time)
+		} else {
+			slog.WarnContext(ctx, "Unparseable audit event timestamp, cursor not advanced",
+				"account", c.scope, "time", lastEvent.Action.Time)
+		}
+	}); err != nil {
+		c.fail(ctx, span, "Failed to ship audit events to Loki", err)
 		return
 	}
 
-	slog.InfoContext(ctx, "Audit events pushed to Loki", "account", c.accountName, "count", len(events))
-
-	// Update metrics.
-	for i := range events {
-		metrics.AuditEventsTotal.WithLabelValues(events[i].Action.Type, c.accountName).Inc()
-	}
-
-	// Advance cursor to the last event's timestamp and record the IDs sharing
-	// that timestamp so the next poll can drop them if the API returns them again.
-	lastEvent := events[len(events)-1]
-	if t, ok := parseEventTime(lastEvent.Action.Time); ok {
-		c.lastSeen = t
-		c.shippedAtCursor = boundaryIDs(events, lastEvent.Action.Time)
-	} else {
-		slog.WarnContext(ctx, "Unparseable audit event timestamp, cursor not advanced",
-			"account", c.accountName, "time", lastEvent.Action.Time)
-	}
+	slog.InfoContext(ctx, "Audit events pushed to Loki", "account", c.scope, "count", len(events))
 }
 
 // dropAlreadyShipped removes events already shipped on a previous poll. The
@@ -201,15 +169,4 @@ func boundaryIDs(events []cloudflare.AuditLogEvent, boundary string) map[string]
 		}
 	}
 	return ids
-}
-
-// shipToLoki sends audit events to Loki as JSON log lines in batches.
-func (c *AuditCollector) shipToLoki(ctx context.Context, events []cloudflare.AuditLogEvent) error {
-	labels := map[string]string{
-		"job":     "cloudflare",
-		"type":    DatasetAudit.String(),
-		"account": c.accountName,
-	}
-
-	return shipJSON(ctx, c.loki, c.batchSize, labels, events, "Failed to marshal audit event", "account", c.accountName)
 }
