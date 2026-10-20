@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.23](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.22...v0.1.23) (2026-10-20)
+
+
+### Features
+
+* **http:** per-host, cache-status, and origin-status breakdown ([#113](https://github.com/afreidah/cloudflare-log-collector/issues/113)) ([548586c](https://github.com/afreidah/cloudflare-log-collector/commit/548586c22fcd4394f03b67157a67c1570a97b87b)), closes [#99](https://github.com/afreidah/cloudflare-log-collector/issues/99)
+
 ## [0.1.22](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.21...v0.1.22) (2026-10-20)
 
 
