@@ -9,8 +9,9 @@
 // the run-time half each collector embeds: those settings plus the collector's
 // identity (its display name, the zone/account/site it polls, and its Loki
 // stream), and the behavior that follows from them - scheduling polls, sizing
-// their windows, and recording their outcome. Collectors keep only what is
-// theirs: a querier, their IDs, and their cursor state.
+// their windows, recording their outcome, and labeling data metrics with the
+// scope. Collectors keep only what is theirs: a querier, their IDs, and their
+// cursor state.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -23,6 +24,7 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -173,4 +175,29 @@ func (b *base) recordPoll(dataset Dataset, start time.Time, err error) {
 	if err == nil {
 		metrics.LastPollTimestamp.WithLabelValues(dataset.String(), b.scope).Set(float64(time.Now().Unix()))
 	}
+}
+
+// -------------------------------------------------------------------------
+// DATA METRICS
+// -------------------------------------------------------------------------
+
+// Every data metric a collector emits ends in its scope label - zone, account,
+// or site, named by scopeKey. These helpers append it, so a call site passes
+// only the labels its data carries and cannot misplace or omit the scope.
+
+// add adds n to counter's series for labels plus the scope.
+func (b *base) add(counter *prometheus.CounterVec, n float64, labels ...string) {
+	counter.WithLabelValues(append(labels, b.scope)...).Add(n)
+}
+
+// set sets gauge's series for labels plus the scope to v.
+func (b *base) set(gauge *prometheus.GaugeVec, v float64, labels ...string) {
+	gauge.WithLabelValues(append(labels, b.scope)...).Set(v)
+}
+
+// clear deletes every series of gauge in this collector's scope, so a gauge
+// repopulated each poll drops series absent from the latest data rather than
+// leaving them at a stale value.
+func (b *base) clear(gauge *prometheus.GaugeVec) {
+	gauge.DeletePartialMatch(prometheus.Labels{b.scopeKey: b.scope})
 }

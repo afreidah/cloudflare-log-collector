@@ -94,7 +94,7 @@ func (c *AuditCollector) poll(ctx context.Context) {
 		filter: c.dropAlreadyShipped,
 		count: func(events []cloudflare.AuditLogEvent) {
 			for i := range events {
-				metrics.AuditEventsTotal.WithLabelValues(events[i].Action.Type, c.scope).Inc()
+				c.add(metrics.AuditEventsTotal, 1, events[i].Action.Type)
 			}
 		},
 		advanced: func(events []cloudflare.AuditLogEvent) {

@@ -342,7 +342,8 @@ cmd/cloudflare-log-collector/   # Binary entry point and composition root: confi
 internal/
   config/                       # YAML + ${ENV} config: types, defaults, validation
   cloudflare/                   # Cloudflare GraphQL + REST Audit Logs client (producer);
-                                # shared dataset query + GraphQL transport in graphql.go
+                                # dataset queries built from row types in dataset.go,
+                                # GraphQL transport in graphql.go
   loki/                         # Loki push API client (producer)
   retry/                        # HTTP retry policy and attempt loop shared by both clients
   collector/                    # Pollers: firewall, http, audit, rum. Shared collector base
@@ -556,12 +557,15 @@ Labels multiply storage cost. Hard rules:
 
 ### Updating a Metric
 
-Counters use `Inc`/`Add`, gauges use `Set`, histograms use `Observe`. Always
-pass label values in the order they appear in the metric declaration; Prometheus
-does not protect against argument-order swaps. Per-poll gauges
-(`cflog_http_requests`, `cflog_http_bytes`) are reset for the current zone via
-`DeletePartialMatch` before being repopulated, so they reflect only the latest
-poll window.
+Every data metric a collector emits ends in its scope label (`zone`,
+`account`, or `site`). Collectors update them through the base helpers, which
+append the scope: `c.add(counter, n, labels...)` for counters and
+`c.set(gauge, v, labels...)` for gauges, passing only the labels the data
+carries, in declaration order - Prometheus does not protect against
+argument-order swaps. A gauge repopulated each poll (the RUM web vitals) is
+first emptied for the collector's scope with `c.clear(gauge)`, so it reflects
+only the latest window. Poll-health metrics (`recordPoll`) and histograms use
+the Prometheus API directly.
 
 ---
 

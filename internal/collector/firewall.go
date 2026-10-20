@@ -90,7 +90,7 @@ func (c *FirewallCollector) poll(ctx context.Context) {
 		},
 		count: func(events []cloudflare.FirewallEvent) {
 			for i := range events {
-				metrics.FirewallEventsTotal.WithLabelValues(events[i].Action, c.scope).Inc()
+				c.add(metrics.FirewallEventsTotal, 1, events[i].Action)
 			}
 		},
 	})

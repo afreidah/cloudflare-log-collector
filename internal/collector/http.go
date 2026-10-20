@@ -91,12 +91,10 @@ func (c *HTTPCollector) updateMetrics(groups []cloudflare.HTTPRequestGroup) {
 		host := normalizeHost(d.ClientRequestHTTPHost)
 		status := statusLabel(d.EdgeResponseStatus)
 
-		metrics.HTTPRequestsTotal.WithLabelValues(
-			d.ClientRequestHTTPMethodName, status, d.ClientCountryName, host, d.CacheStatus, d.RequestSource, c.scope,
-		).Add(count)
-		metrics.HTTPOriginRequestsTotal.WithLabelValues(
-			host, statusLabel(d.OriginResponseStatus), status, d.RequestSource, c.scope,
-		).Add(count)
-		metrics.HTTPBytesTotal.WithLabelValues("edge", host, d.RequestSource, c.scope).Add(float64(groups[i].Sum.EdgeResponseBytes))
+		c.add(metrics.HTTPRequestsTotal, count,
+			d.ClientRequestHTTPMethodName, status, d.ClientCountryName, host, d.CacheStatus, d.RequestSource)
+		c.add(metrics.HTTPOriginRequestsTotal, count,
+			host, statusLabel(d.OriginResponseStatus), status, d.RequestSource)
+		c.add(metrics.HTTPBytesTotal, float64(groups[i].Sum.EdgeResponseBytes), "edge", host, d.RequestSource)
 	}
 }

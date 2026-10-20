@@ -4,9 +4,9 @@
 // Author: Alex Freidah
 //
 // Covers every Analytics dataset query through the shared queryDataset, once:
-// each sends its scope variables plus the window and its limit, decodes its
-// rows exactly (catching JSON tag drift on any row type), and returns no rows
-// when the response has no zone/account node. Also covers queryDataset's edge
+// each sends its generated document with its scope variables plus the window
+// and its limit, decodes its rows exactly (catching JSON tag drift on any row
+// type), and returns no rows when the response has no zone/account node. Also covers queryDataset's edge
 // cases: a missing dataset field, malformed rows, and a full (possibly
 // truncated) page.
 // -------------------------------------------------------------------------------
@@ -25,28 +25,27 @@ import (
 	"time"
 )
 
-// decodeQueryVariables reads the GraphQL request body and returns its variables.
-func decodeQueryVariables(t *testing.T, r *http.Request) map[string]any {
+// decodeRequest reads the GraphQL request body: the query sent and its
+// variables.
+func decodeRequest(t *testing.T, r *http.Request) graphQLRequest {
 	t.Helper()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		t.Fatalf("read request body: %v", err)
 	}
-	var req struct {
-		Variables map[string]any `json:"variables"`
-	}
+	var req graphQLRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		t.Fatalf("unmarshal request: %v", err)
 	}
-	return req.Variables
+	return req
 }
 
-// datasetCase is one dataset query under test: the dataset it runs, the scope
-// variables it must send, sample rows for the server to return, and a call
-// that runs the query and returns its rows.
+// datasetCase is one dataset query under test: the built dataset it runs, the
+// scope variables it must send, sample rows for the server to return, and a
+// call that runs the query and returns its rows.
 type datasetCase struct {
 	name string
-	ds   dataset
+	info datasetInfo
 	vars map[string]any
 	rows any
 	call func(c *Client, since, until time.Time) (any, error)
@@ -57,7 +56,7 @@ func datasetCases() []datasetCase {
 	return []datasetCase{
 		{
 			name: "firewall",
-			ds:   firewallDataset,
+			info: firewallDataset.datasetInfo,
 			vars: map[string]any{"zoneId": "zone1"},
 			rows: []FirewallEvent{{Action: "block", ClientIP: "1.2.3.4", ClientRequestHTTPHost: "example.com", Datetime: "2026-03-13T10:00:00Z", RayName: "abc123", RuleID: "r1", Source: "waf", ClientCountryName: "US"}},
 			call: func(c *Client, since, until time.Time) (any, error) {
@@ -66,7 +65,7 @@ func datasetCases() []datasetCase {
 		},
 		{
 			name: "http",
-			ds:   httpDataset,
+			info: httpDataset.datasetInfo,
 			vars: map[string]any{"zoneId": "zone1"},
 			rows: []HTTPRequestGroup{{Count: 42, Dimensions: HTTPRequestDimensions{
 				DatetimeMinute: "2026-03-13T10:00:00Z", ClientRequestHTTPHost: "example.com", ClientRequestHTTPMethodName: "GET",
@@ -78,10 +77,11 @@ func datasetCases() []datasetCase {
 		},
 		{
 			name: "rum pageloads",
-			ds:   rumPageloadDataset,
+			info: rumPageloadDataset.datasetInfo,
 			vars: map[string]any{"accountId": "acct1", "siteTag": "site1"},
 			rows: []RUMPageloadGroup{{Count: 9, Dimensions: RUMPageloadDimensions{
-				RequestPath: "/guides/", CountryName: "VN", DeviceType: "desktop", RefererHost: "ref.example",
+				DatetimeMinute: "2026-03-13T10:00:00Z", RequestHost: "vagabond.munchbox.cc", RequestPath: "/guides/",
+				CountryName: "VN", DeviceType: "desktop", RefererHost: "ref.example", Bot: 1,
 			}, Sum: RUMPageloadSum{Visits: 1}}},
 			call: func(c *Client, since, until time.Time) (any, error) {
 				return c.QueryRUMPageloads(ctx, "acct1", "site1", since, until)
@@ -89,9 +89,9 @@ func datasetCases() []datasetCase {
 		},
 		{
 			name: "rum web vitals",
-			ds:   rumWebVitalsDataset,
+			info: rumWebVitalsDataset.datasetInfo,
 			vars: map[string]any{"accountId": "acct1", "siteTag": "site1"},
-			rows: []RUMWebVitalsGroup{{Count: 12, Dimensions: RUMWebVitalsDimensions{DeviceType: "desktop"}, Quantiles: RUMWebVitalsQuantiles{
+			rows: []RUMWebVitalsGroup{{Count: 12, Dimensions: RUMWebVitalsDimensions{RequestHost: "vagabond.munchbox.cc", DeviceType: "desktop"}, Quantiles: RUMWebVitalsQuantiles{
 				LargestContentfulPaintP75: 1396000, InteractionToNextPaintP75: 48000, FirstInputDelayP75: -1,
 				FirstContentfulPaintP75: 1200000, TimeToFirstByteP75: 591500, CumulativeLayoutShiftP75: 0.012,
 			}}},
@@ -108,27 +108,30 @@ func TestDatasetQueries_SendVariablesAndDecodeRows(t *testing.T) {
 
 	for _, tc := range datasetCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			var gotVars map[string]any
+			var got graphQLRequest
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				verifyAuthHeader(t, r)
 				verifyContentType(t, r)
-				gotVars = decodeQueryVariables(t, r)
-				writeJSON(t, w, datasetResponse(tc.ds.scope, tc.ds.field, tc.rows))
+				got = decodeRequest(t, r)
+				writeJSON(t, w, datasetResponse(tc.info.node, tc.info.field, tc.rows))
 			}))
 			t.Cleanup(ts.Close)
 
-			got, err := tc.call(newTestClient(ts.URL, "test-token"), since, until)
+			rows, err := tc.call(newTestClient(ts.URL, "test-token"), since, until)
 			if err != nil {
 				t.Fatalf("query error = %v", err)
 			}
-			if !reflect.DeepEqual(got, tc.rows) {
-				t.Errorf("rows = %+v, want %+v", got, tc.rows)
+			if !reflect.DeepEqual(rows, tc.rows) {
+				t.Errorf("rows = %+v, want %+v", rows, tc.rows)
 			}
 
-			want := map[string]any{"since": "2026-03-13T10:00:00Z", "until": "2026-03-13T11:00:00Z", "limit": float64(tc.ds.limit)}
+			if got.Query != tc.info.query {
+				t.Errorf("sent query is not the dataset's generated document:\n%s", got.Query)
+			}
+			want := map[string]any{"since": "2026-03-13T10:00:00Z", "until": "2026-03-13T11:00:00Z", "limit": float64(tc.info.limit)}
 			maps.Copy(want, tc.vars)
-			if !reflect.DeepEqual(gotVars, want) {
-				t.Errorf("variables = %v, want %v", gotVars, want)
+			if !reflect.DeepEqual(got.Variables, want) {
+				t.Errorf("variables = %v, want %v", got.Variables, want)
 			}
 		})
 	}
@@ -138,7 +141,7 @@ func TestDatasetQueries_NoScopeNodeReturnsNoRows(t *testing.T) {
 	for _, tc := range datasetCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				writeJSON(t, w, map[string]any{"data": map[string]any{"viewer": map[string]any{tc.ds.scope: []any{}}}})
+				writeJSON(t, w, map[string]any{"data": map[string]any{"viewer": map[string]any{tc.info.node: []any{}}}})
 			}))
 			t.Cleanup(ts.Close)
 
@@ -147,7 +150,7 @@ func TestDatasetQueries_NoScopeNodeReturnsNoRows(t *testing.T) {
 				t.Fatalf("query error = %v", err)
 			}
 			if n := reflect.ValueOf(got).Len(); n != 0 {
-				t.Errorf("got %d rows, want 0 when the %s node is empty", n, tc.ds.scope)
+				t.Errorf("got %d rows, want 0 when the %s node is empty", n, tc.info.node)
 			}
 		})
 	}

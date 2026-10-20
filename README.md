@@ -66,11 +66,13 @@ Every service sharing a zone gets its own `host` series (lowercased, port stripp
 
 ### RUM / Web Analytics (`rumPageloadEventsAdaptiveGroups`, `rumWebVitalsEventsAdaptiveGroups`)
 
-Browser-side Real User Monitoring, scoped per Web Analytics site. Page loads are pushed to Loki under `{job="cloudflare", type="rum_pageload", site="example.com"}` and counted (page views and sessions by country and device) in Prometheus. Core Web Vitals (LCP, INP, FID, FCP, TTFB, CLS) p75 are exposed as Prometheus gauges, sliced by device.
+Browser-side Real User Monitoring, scoped per Web Analytics site. Page loads are pushed to Loki under `{job="cloudflare", type="rum_pageload", site="example.com"}` and counted (page views and sessions by country, device, and host) in Prometheus. Core Web Vitals (LCP, INP, FID, FCP, TTFB, CLS) p75 are exposed as Prometheus gauges, sliced by host and device.
 
 The datasets are account-scoped and identified by a site tag. Web Analytics must be enabled on the zone, and the API token needs Account Analytics Read. RUM collection is disabled by default.
 
-Fields captured: pageloads - `count`, `sum.visits`, dimensions `requestPath`, `countryName`, `deviceType`, `refererHost`; web vitals - per-device p75 quantiles of each Core Web Vital (values in microseconds, except CLS which is a unitless score).
+A Web Analytics site covers every host in its zone, so several websites can share one site tag; the `host` label (lowercased, port stripped, as for HTTP) keeps each one separate. Known bots (Cloudflare's `bot` flag) are kept out of the metrics: their page loads still ship to Loki with `bot` set but are not counted, and web vitals are queried for real browsers only.
+
+Fields captured: pageloads - `count`, `sum.visits`, dimensions `datetimeMinute`, `requestHost`, `requestPath`, `countryName`, `deviceType`, `refererHost`, `bot`; web vitals - per-host, per-device p75 quantiles of each Core Web Vital (values in microseconds, except CLS which is a unitless score).
 
 ### Account Audit Logs
 
@@ -94,15 +96,15 @@ Exposed on the configured metrics listen address (default `:9101`).
 | `cflog_http_requests_total` | counter | `method`, `status`, `country`, `host`, `cache_status`, `source`, `zone` | Cumulative HTTP requests |
 | `cflog_http_origin_requests_total` | counter | `host`, `origin_status`, `status`, `source`, `zone` | Cumulative HTTP requests by origin status and edge status |
 | `cflog_http_bytes_total` | counter | `type`, `host`, `source`, `zone` | Cumulative edge response bytes |
-| `cflog_rum_pageviews_total` | counter | `country`, `device`, `site` | RUM page views |
-| `cflog_rum_sessions_total` | counter | `country`, `device`, `site` | RUM sessions (entry page loads) |
-| `cflog_rum_web_vital_seconds` | gauge | `vital`, `device`, `site` | Core Web Vitals p75 in seconds (lcp, inp, fid, fcp, ttfb) |
-| `cflog_rum_cumulative_layout_shift` | gauge | `device`, `site` | Cumulative Layout Shift p75 (unitless) |
+| `cflog_rum_pageviews_total` | counter | `country`, `device`, `host`, `site` | RUM page views (known bots excluded) |
+| `cflog_rum_sessions_total` | counter | `country`, `device`, `host`, `site` | RUM sessions (entry page loads, known bots excluded) |
+| `cflog_rum_web_vital_seconds` | gauge | `vital`, `device`, `host`, `site` | Core Web Vitals p75 in seconds (lcp, inp, fid, fcp, ttfb), real browsers only |
+| `cflog_rum_cumulative_layout_shift` | gauge | `device`, `host`, `site` | Cumulative Layout Shift p75 (unitless), real browsers only |
 | `cflog_loki_push_total` | counter | `status` | Loki push attempts by outcome |
 | `cflog_loki_push_duration_seconds` | histogram | | Loki push latency |
 | `cflog_build_info` | gauge | `version`, `go_version` | Build metadata |
 
-**Cardinality.** The HTTP series grow with the number of distinct label combinations a zone actually sees, not the product of every possible value. Measured over 24 hours on two Pro zones (3 and 13 hosts), `cflog_http_requests_total` produced 117 and 226 series, and `cflog_http_origin_requests_total` well under that. High-cardinality request detail (path, query, client IP, user agent) stays in Loki and never becomes a label.
+**Cardinality.** The HTTP series grow with the number of distinct label combinations a zone actually sees, not the product of every possible value. Measured over 24 hours on two Pro zones (3 and 13 hosts), `cflog_http_requests_total` produced 117 and 226 series, and `cflog_http_origin_requests_total` well under that. The RUM `host` label is bounded by the websites carrying the Web Analytics beacon (7 here), so RUM series stay at hosts x countries x devices seen. High-cardinality request detail (path, query, referer, client IP, user agent) stays in Loki and never becomes a label.
 
 ## Loki Streams
 
@@ -248,7 +250,8 @@ make clean                  # remove build artifacts
 |-- internal/
 |   |-- cloudflare/
 |   |   |-- client.go                 # Core API client, retrying HTTP transport
-|   |   |-- graphql.go                # Shared dataset query + GraphQL transport
+|   |   |-- dataset.go                # Dataset query builder (selection from row types) + runner
+|   |   |-- graphql.go                # GraphQL transport
 |   |   |-- firewall.go               # firewallEventsAdaptive dataset
 |   |   |-- http.go                   # httpRequestsAdaptiveGroups dataset
 |   |   |-- rum.go                    # RUM / Web Analytics datasets

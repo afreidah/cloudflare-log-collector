@@ -32,29 +32,14 @@ type FirewallEvent struct {
 
 // firewallDataset fetches individual firewall/WAF events ordered by time, so
 // the collector's seek cursor can advance to the last event returned.
-var firewallDataset = dataset{
-	field: "firewallEventsAdaptive",
-	scope: "zones",
-	limit: 10000,
-	query: `query ($zoneId: String!, $since: String!, $until: String!, $limit: uint64!) {
-  viewer {
-    zones(filter: {zoneTag: $zoneId}) {
-      firewallEventsAdaptive(
-        filter: {datetime_gt: $since, datetime_leq: $until}
-        limit: $limit
-        orderBy: [datetime_ASC]
-      ) {
-        action clientIP clientRequestHTTPHost clientRequestHTTPMethodName
-        clientRequestPath clientRequestQuery datetime rayName ruleId
-        source userAgent clientCountryName
-      }
-    }
-  }
-}`,
-}
+var firewallDataset = newDataset[FirewallEvent](datasetSpec{
+	field:   "firewallEventsAdaptive",
+	scope:   zoneScope,
+	orderBy: "[datetime_ASC]",
+	limit:   10000,
+})
 
 // QueryFirewallEvents fetches firewall events for the given zone and time range.
 func (c *Client) QueryFirewallEvents(ctx context.Context, zoneID string, since, until time.Time) ([]FirewallEvent, error) {
-	return queryDataset[FirewallEvent](ctx, c, firewallDataset, zoneID, since, until,
-		map[string]any{"zoneId": zoneID})
+	return queryDataset(ctx, c, firewallDataset, zoneID, since, until, map[string]any{"zoneId": zoneID})
 }
