@@ -3,11 +3,11 @@
 //
 // Author: Alex Freidah
 //
-// Drives the RUM collector through an in-memory fake querier. Covers page-load
-// counting and Loki shipping with cursor advancement, the no-double-count
-// guarantee on a Loki failure, web-vital gauge conversion (microseconds to
-// seconds, CLS as a unitless score), and the -1 "no data" sentinel being
-// dropped rather than emitted as a zero.
+// Covers what is RUM's own: the page-load spec wiring on top of the shared
+// cursor-based poll (site, window, page-view/session counters, cursor to the
+// window end), and the web-vitals rolling window - gauge conversion
+// (microseconds to seconds, CLS as a unitless score) and the -1 "no data"
+// sentinel being dropped rather than emitted as a zero.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -25,116 +25,54 @@ import (
 )
 
 // fakeRUMQuerier implements rumQuerier with canned per-dataset responses and
-// independent error control, recording how many times each method was called.
+// independent error control, recording every call's site tag and window.
 type fakeRUMQuerier struct {
-	pageloads    []cloudflare.RUMPageloadGroup
-	webVitals    []cloudflare.RUMWebVitalsGroup
-	pageloadErr  error
-	webVitalsErr error
-
-	pageloadCalls  int
-	webVitalsCalls int
+	pageloads      []cloudflare.RUMPageloadGroup
+	webVitals      []cloudflare.RUMWebVitalsGroup
+	pageloadErr    error
+	webVitalsErr   error
+	pageloadCalls  []queryCall
+	webVitalsCalls []queryCall
 }
 
-func (f *fakeRUMQuerier) QueryRUMPageloads(_ context.Context, _, _ string, _, _ time.Time) ([]cloudflare.RUMPageloadGroup, error) {
-	f.pageloadCalls++
+func (f *fakeRUMQuerier) QueryRUMPageloads(_ context.Context, _, siteTag string, since, until time.Time) ([]cloudflare.RUMPageloadGroup, error) {
+	f.pageloadCalls = append(f.pageloadCalls, queryCall{siteTag, since, until})
 	return f.pageloads, f.pageloadErr
 }
 
-func (f *fakeRUMQuerier) QueryRUMWebVitals(_ context.Context, _, _ string, _, _ time.Time) ([]cloudflare.RUMWebVitalsGroup, error) {
-	f.webVitalsCalls++
+func (f *fakeRUMQuerier) QueryRUMWebVitals(_ context.Context, _, siteTag string, since, until time.Time) ([]cloudflare.RUMWebVitalsGroup, error) {
+	f.webVitalsCalls = append(f.webVitalsCalls, queryCall{siteTag, since, until})
 	return f.webVitals, f.webVitalsErr
-}
-
-// rumTestCollector builds a RUM collector wired to the given fakes.
-func rumTestCollector(cf rumQuerier, push logPusher) *RUMCollector {
-	return NewRUMCollector(RUMCollectorConfig{
-		CommonConfig: testCommon(push),
-		CF:           cf,
-		AccountID:    "acct1",
-		SiteTag:      "site1",
-		SiteName:     "example.com",
-	})
 }
 
 // -------------------------------------------------------------------------
 // PAGE LOADS
 // -------------------------------------------------------------------------
 
-func TestRUMPollPageloads_CountsShipsAndAdvances(t *testing.T) {
+func TestRUMPollPageloads_Wiring(t *testing.T) {
 	metrics.RUMPageviewsTotal.Reset()
 	metrics.RUMSessionsTotal.Reset()
-
-	cf := &fakeRUMQuerier{
-		pageloads: []cloudflare.RUMPageloadGroup{
-			{
-				Count:      9,
-				Dimensions: cloudflare.RUMPageloadDimensions{RequestPath: "/", CountryName: "VN", DeviceType: "desktop"},
-				Sum:        cloudflare.RUMPageloadSum{Visits: 1},
-			},
-		},
-	}
+	cf := &fakeRUMQuerier{pageloads: []cloudflare.RUMPageloadGroup{{
+		Count:      9,
+		Dimensions: cloudflare.RUMPageloadDimensions{RequestPath: "/", CountryName: "VN", DeviceType: "desktop"},
+		Sum:        cloudflare.RUMPageloadSum{Visits: 1},
+	}}}
 	push := &fakePusher{}
-	c := rumTestCollector(cf, push)
+	c := NewRUMCollector(rumTestConfig(cf, push))
+	since := c.pageloadSeen
 
-	before := c.pageloadSeen
 	c.pollPageloads(context.Background())
 
-	if cf.pageloadCalls != 1 {
-		t.Errorf("pageload querier called %d times, want 1", cf.pageloadCalls)
+	if len(cf.pageloadCalls) != 1 || cf.pageloadCalls[0].scopeID != "site1" || !cf.pageloadCalls[0].since.Equal(since) {
+		t.Fatalf("pageload calls = %+v, want one for site1 from the cursor %v", cf.pageloadCalls, since)
 	}
-	if len(push.labels) != 1 {
-		t.Fatalf("got %d Loki pushes, want 1", len(push.labels))
-	}
-	if push.labels[0]["type"] != DatasetRUMPageload.String() {
-		t.Errorf("stream type = %q, want %q", push.labels[0]["type"], DatasetRUMPageload.String())
-	}
-	if push.labels[0]["site"] != "example.com" {
-		t.Errorf("stream site = %q, want example.com", push.labels[0]["site"])
-	}
-
 	assertCounterValue(t, metrics.RUMPageviewsTotal.WithLabelValues("VN", "desktop", "example.com"), 9)
 	assertCounterValue(t, metrics.RUMSessionsTotal.WithLabelValues("VN", "desktop", "example.com"), 1)
-
-	if !c.pageloadSeen.After(before) {
-		t.Error("pageloadSeen cursor should advance after a successful poll")
+	if !c.pageloadSeen.Equal(cf.pageloadCalls[0].until) {
+		t.Errorf("cursor = %v, want the window end %v", c.pageloadSeen, cf.pageloadCalls[0].until)
 	}
-}
-
-func TestRUMPollPageloads_LokiErrorDoesNotCountOrAdvance(t *testing.T) {
-	metrics.RUMPageviewsTotal.Reset()
-
-	cf := &fakeRUMQuerier{
-		pageloads: []cloudflare.RUMPageloadGroup{
-			{Count: 5, Dimensions: cloudflare.RUMPageloadDimensions{CountryName: "US", DeviceType: "mobile"}},
-		},
-	}
-	push := &fakePusher{err: errors.New("loki down")}
-	c := rumTestCollector(cf, push)
-
-	before := c.pageloadSeen
-	c.pollPageloads(context.Background())
-
-	// Shipping failed, so the page view must not be counted and the cursor must
-	// not advance (the same window is retried next poll - no double counting).
-	assertCounterValue(t, metrics.RUMPageviewsTotal.WithLabelValues("US", "mobile", "example.com"), 0)
-	if c.pageloadSeen != before {
-		t.Error("pageloadSeen cursor must not advance when the Loki push fails")
-	}
-}
-
-func TestRUMPollPageloads_QueryErrorSkipsLoki(t *testing.T) {
-	cf := &fakeRUMQuerier{pageloadErr: errors.New("boom")}
-	push := &fakePusher{}
-	c := rumTestCollector(cf, push)
-
-	c.pollPageloads(context.Background())
-
-	if cf.pageloadCalls != 1 {
-		t.Errorf("pageload querier called %d times, want 1", cf.pageloadCalls)
-	}
-	if len(push.labels) != 0 {
-		t.Errorf("got %d Loki pushes, want 0 on query error", len(push.labels))
+	if len(push.entries) != 1 {
+		t.Errorf("got %d Loki pushes, want 1", len(push.entries))
 	}
 }
 
@@ -161,7 +99,7 @@ func TestRUMPollWebVitals_ConvertsAndDropsSentinel(t *testing.T) {
 			},
 		},
 	}
-	c := rumTestCollector(cf, &fakePusher{})
+	c := NewRUMCollector(rumTestConfig(cf, &fakePusher{}))
 
 	c.pollWebVitals(context.Background())
 
@@ -183,7 +121,7 @@ func TestRUMPollWebVitals_QueryErrorKeepsGauges(t *testing.T) {
 	metrics.RUMWebVitalSeconds.WithLabelValues("lcp", "desktop", "example.com").Set(1.0)
 
 	cf := &fakeRUMQuerier{webVitalsErr: errors.New("boom")}
-	c := rumTestCollector(cf, &fakePusher{})
+	c := NewRUMCollector(rumTestConfig(cf, &fakePusher{}))
 
 	c.pollWebVitals(context.Background())
 
@@ -191,30 +129,14 @@ func TestRUMPollWebVitals_QueryErrorKeepsGauges(t *testing.T) {
 	assertGaugeValue(t, metrics.RUMWebVitalSeconds.WithLabelValues("lcp", "desktop", "example.com"), 1.0)
 }
 
-// -------------------------------------------------------------------------
-// RUN
-// -------------------------------------------------------------------------
+func TestRUMPoll_RunsBothDatasets(t *testing.T) {
+	cf := &fakeRUMQuerier{}
+	c := NewRUMCollector(rumTestConfig(cf, &fakePusher{}))
 
-func TestRUMRun_InitialPollThenCancel(t *testing.T) {
-	cf := &fakeRUMQuerier{
-		pageloads: []cloudflare.RUMPageloadGroup{
-			{Count: 3, Dimensions: cloudflare.RUMPageloadDimensions{CountryName: "US", DeviceType: "desktop"}},
-		},
-	}
-	c := rumTestCollector(cf, &fakePusher{})
+	c.poll(context.Background())
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- c.Run(ctx) }()
-
-	time.Sleep(100 * time.Millisecond)
-	cancel()
-
-	if err := <-done; err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if cf.pageloadCalls < 1 || cf.webVitalsCalls < 1 {
-		t.Errorf("initial poll should query both datasets; pageloads=%d webvitals=%d",
-			cf.pageloadCalls, cf.webVitalsCalls)
+	if len(cf.pageloadCalls) != 1 || len(cf.webVitalsCalls) != 1 {
+		t.Errorf("one poll should query both datasets; pageloads=%d webvitals=%d",
+			len(cf.pageloadCalls), len(cf.webVitalsCalls))
 	}
 }

@@ -4,8 +4,9 @@
 // Author: Alex Freidah
 //
 // Polls the Cloudflare httpRequestsAdaptiveGroups dataset on a configurable
-// interval. Accumulates aggregated traffic statistics into Prometheus counters
-// and ships raw traffic groups to Loki as structured JSON logs. Its seek cursor
+// interval. Accumulates aggregated traffic statistics into Prometheus counters -
+// per host, with cache, origin, and request-source breakdowns - and ships raw
+// traffic groups to Loki as structured JSON logs. Its seek cursor
 // moves to the end of each handled window (see cursor.go), and each cycle runs
 // through the shared cursor-based poll in poll.go.
 // -------------------------------------------------------------------------------
@@ -14,7 +15,6 @@ package collector
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
@@ -85,17 +85,18 @@ func (c *HTTPCollector) poll(ctx context.Context) {
 // without resetting between polls - which keeps the series immune to poll-window
 // length and lets dashboards derive rates with rate()/increase().
 func (c *HTTPCollector) updateMetrics(groups []cloudflare.HTTPRequestGroup) {
-	var totalEdgeBytes int64
+	for i := range groups {
+		d := groups[i].Dimensions
+		count := float64(groups[i].Count)
+		host := normalizeHost(d.ClientRequestHTTPHost)
+		status := statusLabel(d.EdgeResponseStatus)
 
-	for _, g := range groups {
-		method := g.Dimensions.ClientRequestHTTPMethodName
-		status := fmt.Sprintf("%d", g.Dimensions.EdgeResponseStatus)
-		country := g.Dimensions.ClientCountryName
-
-		metrics.HTTPRequestsTotal.WithLabelValues(method, status, country, c.scope).Add(float64(g.Count))
-
-		totalEdgeBytes += g.Sum.EdgeResponseBytes
+		metrics.HTTPRequestsTotal.WithLabelValues(
+			d.ClientRequestHTTPMethodName, status, d.ClientCountryName, host, d.CacheStatus, d.RequestSource, c.scope,
+		).Add(count)
+		metrics.HTTPOriginRequestsTotal.WithLabelValues(
+			host, statusLabel(d.OriginResponseStatus), status, d.RequestSource, c.scope,
+		).Add(count)
+		metrics.HTTPBytesTotal.WithLabelValues("edge", host, d.RequestSource, c.scope).Add(float64(groups[i].Sum.EdgeResponseBytes))
 	}
-
-	metrics.HTTPBytesTotal.WithLabelValues("edge", c.scope).Add(float64(totalEdgeBytes))
 }
