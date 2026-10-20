@@ -13,13 +13,11 @@ package cloudflare
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"log/slog"
 	"time"
 )
 
-// rumQueryLimit is the maximum number of RUM groups returned per query.
+// rumQueryLimit is the most groups requested per RUM query, shared by both RUM
+// datasets.
 const rumQueryLimit = 5000
 
 // RUMPageloadGroup represents an aggregated browser-side page-load data point
@@ -70,34 +68,19 @@ type RUMWebVitalsQuantiles struct {
 	CumulativeLayoutShiftP75  float64 `json:"cumulativeLayoutShiftP75"`
 }
 
-// rumPageloadResponse maps the GraphQL response for rumPageloadEventsAdaptiveGroups
-// queries. The RUM datasets are account-scoped (under viewer.accounts), unlike
-// the zone-scoped firewall and HTTP datasets.
-type rumPageloadResponse struct {
-	Viewer struct {
-		Accounts []struct {
-			RUMPageloadEventsAdaptiveGroups []RUMPageloadGroup `json:"rumPageloadEventsAdaptiveGroups"`
-		} `json:"accounts"`
-	} `json:"viewer"`
-}
-
-// rumWebVitalsResponse maps the GraphQL response for rumWebVitalsEventsAdaptiveGroups queries.
-type rumWebVitalsResponse struct {
-	Viewer struct {
-		Accounts []struct {
-			RUMWebVitalsEventsAdaptiveGroups []RUMWebVitalsGroup `json:"rumWebVitalsEventsAdaptiveGroups"`
-		} `json:"accounts"`
-	} `json:"viewer"`
-}
-
-// rumPageloadQuery fetches browser-side page-load groups for one Web Analytics
-// site. RUM datasets are account-scoped and filtered by siteTag.
-const rumPageloadQuery = `query ($accountId: String!, $siteTag: String!, $since: String!, $until: String!) {
+// rumPageloadDataset fetches browser-side page-load groups for one Web
+// Analytics site. RUM datasets are account-scoped (under viewer.accounts),
+// unlike the zone-scoped firewall and HTTP datasets, and filtered by siteTag.
+var rumPageloadDataset = dataset{
+	field: "rumPageloadEventsAdaptiveGroups",
+	scope: "accounts",
+	limit: rumQueryLimit,
+	query: `query ($accountId: String!, $siteTag: String!, $since: String!, $until: String!, $limit: uint64!) {
   viewer {
     accounts(filter: {accountTag: $accountId}) {
       rumPageloadEventsAdaptiveGroups(
         filter: {datetime_gt: $since, datetime_leq: $until, siteTag: $siteTag}
-        limit: 5000
+        limit: $limit
       ) {
         count
         dimensions {
@@ -112,16 +95,21 @@ const rumPageloadQuery = `query ($accountId: String!, $siteTag: String!, $since:
       }
     }
   }
-}`
+}`,
+}
 
-// rumWebVitalsQuery fetches Core Web Vitals p75 quantiles grouped by device for
-// one Web Analytics site.
-const rumWebVitalsQuery = `query ($accountId: String!, $siteTag: String!, $since: String!, $until: String!) {
+// rumWebVitalsDataset fetches Core Web Vitals p75 quantiles grouped by device
+// for one Web Analytics site.
+var rumWebVitalsDataset = dataset{
+	field: "rumWebVitalsEventsAdaptiveGroups",
+	scope: "accounts",
+	limit: rumQueryLimit,
+	query: `query ($accountId: String!, $siteTag: String!, $since: String!, $until: String!, $limit: uint64!) {
   viewer {
     accounts(filter: {accountTag: $accountId}) {
       rumWebVitalsEventsAdaptiveGroups(
         filter: {datetime_gt: $since, datetime_leq: $until, siteTag: $siteTag}
-        limit: 5000
+        limit: $limit
       ) {
         count
         dimensions {
@@ -138,70 +126,19 @@ const rumWebVitalsQuery = `query ($accountId: String!, $siteTag: String!, $since
       }
     }
   }
-}`
+}`,
+}
 
 // QueryRUMPageloads fetches browser-side page-load groups for the given Web
 // Analytics site and time range.
 func (c *Client) QueryRUMPageloads(ctx context.Context, accountID, siteTag string, since, until time.Time) ([]RUMPageloadGroup, error) {
-	vars := map[string]any{
-		"accountId": accountID,
-		"siteTag":   siteTag,
-		"since":     since.UTC().Format(time.RFC3339),
-		"until":     until.UTC().Format(time.RFC3339),
-	}
-
-	body, err := c.doQuery(ctx, siteTag, rumPageloadQuery, vars)
-	if err != nil {
-		return nil, fmt.Errorf("rum pageload query: %w", err)
-	}
-
-	var resp rumPageloadResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("rum pageload response parse: %w", err)
-	}
-
-	if len(resp.Viewer.Accounts) == 0 {
-		return nil, nil
-	}
-
-	groups := resp.Viewer.Accounts[0].RUMPageloadEventsAdaptiveGroups
-	if len(groups) >= rumQueryLimit {
-		slog.WarnContext(ctx, "RUM pageload query hit limit, groups may be truncated",
-			"site_tag", siteTag, "limit", rumQueryLimit, "count", len(groups))
-	}
-
-	return groups, nil
+	return queryDataset[RUMPageloadGroup](ctx, c, rumPageloadDataset, siteTag, since, until,
+		map[string]any{"accountId": accountID, "siteTag": siteTag})
 }
 
 // QueryRUMWebVitals fetches Core Web Vitals quantiles for the given Web
 // Analytics site and time range.
 func (c *Client) QueryRUMWebVitals(ctx context.Context, accountID, siteTag string, since, until time.Time) ([]RUMWebVitalsGroup, error) {
-	vars := map[string]any{
-		"accountId": accountID,
-		"siteTag":   siteTag,
-		"since":     since.UTC().Format(time.RFC3339),
-		"until":     until.UTC().Format(time.RFC3339),
-	}
-
-	body, err := c.doQuery(ctx, siteTag, rumWebVitalsQuery, vars)
-	if err != nil {
-		return nil, fmt.Errorf("rum web vitals query: %w", err)
-	}
-
-	var resp rumWebVitalsResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("rum web vitals response parse: %w", err)
-	}
-
-	if len(resp.Viewer.Accounts) == 0 {
-		return nil, nil
-	}
-
-	groups := resp.Viewer.Accounts[0].RUMWebVitalsEventsAdaptiveGroups
-	if len(groups) >= rumQueryLimit {
-		slog.WarnContext(ctx, "RUM web vitals query hit limit, groups may be truncated",
-			"site_tag", siteTag, "limit", rumQueryLimit, "count", len(groups))
-	}
-
-	return groups, nil
+	return queryDataset[RUMWebVitalsGroup](ctx, c, rumWebVitalsDataset, siteTag, since, until,
+		map[string]any{"accountId": accountID, "siteTag": siteTag})
 }

@@ -3,10 +3,10 @@
 //
 // Author: Alex Freidah
 //
-// HTTP client for the Loki push API (POST /loki/api/v1/push). Batches log
-// entries and sends them as JSON streams with configurable labels and tenant ID.
-// Used to ship Cloudflare firewall events, HTTP traffic, and audit logs into the
-// cluster's Loki instance.
+// HTTP client for the Loki push API (POST /loki/api/v1/push). Sends log entries
+// as JSON streams with configurable labels and tenant ID, retrying under the
+// shared retry policy. Used to ship Cloudflare firewall events, HTTP traffic,
+// audit logs, and RUM page loads into the cluster's Loki instance.
 // -------------------------------------------------------------------------------
 
 // Package loki is a client for the Loki push API, with batching, retry, and
@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -28,7 +27,6 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 )
 
 // -------------------------------------------------------------------------
@@ -46,9 +44,10 @@ type httpDoer interface {
 
 // Client pushes log entries to the Loki HTTP API.
 type Client struct {
-	endpoint   string
-	tenantID   string
-	httpClient httpDoer
+	endpoint    string
+	tenantID    string
+	httpClient  httpDoer
+	retryPolicy retry.Policy
 }
 
 // NewClient creates a Loki push API client.
@@ -59,6 +58,7 @@ func NewClient(endpoint, tenantID string) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		retryPolicy: retry.Default,
 	}
 }
 
@@ -97,6 +97,14 @@ func (c *Client) Push(ctx context.Context, labels map[string]string, entries []E
 
 	start := time.Now()
 
+	// fail is the single failure exit: every failed push is counted and marks
+	// the span failed, whatever stage it failed at.
+	fail := func(err error) error {
+		metrics.LokiPushTotal.WithLabelValues("error").Inc()
+		telemetry.FailSpan(span, err)
+		return err
+	}
+
 	values := make([][]string, len(entries))
 	for i, e := range entries {
 		values[i] = []string{e.Timestamp, e.Line}
@@ -113,19 +121,14 @@ func (c *Client) Push(ctx context.Context, labels map[string]string, entries []E
 
 	payload, err := json.Marshal(req)
 	if err != nil {
-		metrics.LokiPushTotal.WithLabelValues("error").Inc()
-		return fmt.Errorf("marshal push request: %w", err)
+		return fail(fmt.Errorf("marshal push request: %w", err))
 	}
 
-	var statusCode int
-	var respBody []byte
-
-	for attempt := range retry.MaxRetries + 1 {
+	res, err := c.retryPolicy.Do(ctx, "Loki", func() (retry.Result, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			c.endpoint+"/loki/api/v1/push", bytes.NewReader(payload))
 		if err != nil {
-			metrics.LokiPushTotal.WithLabelValues("error").Inc()
-			return fmt.Errorf("create push request: %w", err)
+			return retry.Result{}, fmt.Errorf("create push request: %w", err)
 		}
 
 		httpReq.Header.Set("Content-Type", "application/json")
@@ -133,39 +136,24 @@ func (c *Client) Push(ctx context.Context, labels map[string]string, entries []E
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
-			metrics.LokiPushTotal.WithLabelValues("error").Inc()
-			return fmt.Errorf("push request: %w", err)
+			return retry.Result{}, fmt.Errorf("push request: %w", err)
 		}
 
-		statusCode = resp.StatusCode
-		respBody, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MB cap
+		// The body is only used to explain a rejected push, so a short read is
+		// not itself a failure.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MB cap
 		_ = resp.Body.Close()
 
-		if !retry.IsRetryable(statusCode) || attempt == retry.MaxRetries {
-			break
-		}
-
-		delay := retry.Delay(resp.Header, attempt)
-		slog.WarnContext(ctx, "Loki returned retryable status, backing off",
-			"status", statusCode, "attempt", attempt+1, "delay", delay)
-
-		retryTimer := time.NewTimer(delay)
-		select {
-		case <-retryTimer.C:
-		case <-ctx.Done():
-			retryTimer.Stop()
-			return ctx.Err()
-		}
+		return retry.Result{StatusCode: resp.StatusCode, Header: resp.Header, Body: body}, nil
+	})
+	if err != nil {
+		return fail(err)
 	}
 
 	metrics.LokiPushDuration.Observe(time.Since(start).Seconds())
 
-	if statusCode != http.StatusNoContent && statusCode != http.StatusOK {
-		metrics.LokiPushTotal.WithLabelValues("error").Inc()
-		err := fmt.Errorf("loki push HTTP %d: %s", statusCode, string(respBody))
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return err
+	if res.StatusCode != http.StatusNoContent && res.StatusCode != http.StatusOK {
+		return fail(fmt.Errorf("loki push HTTP %d: %s", res.StatusCode, string(res.Body)))
 	}
 
 	metrics.LokiPushTotal.WithLabelValues("success").Inc()

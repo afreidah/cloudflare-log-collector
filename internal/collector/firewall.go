@@ -9,8 +9,9 @@
 // Each poll cycle is wrapped in an OpenTelemetry span for trace correlation.
 // -------------------------------------------------------------------------------
 
-// Package collector runs the firewall, HTTP traffic, and audit log poll loops,
-// orchestrating Cloudflare queries, Prometheus metrics, and Loki shipping.
+// Package collector runs the firewall, HTTP traffic, audit log, and RUM poll
+// loops, orchestrating Cloudflare queries, Prometheus metrics, and Loki
+// shipping. Behavior every collector shares lives in base.go.
 package collector
 
 import (
@@ -18,92 +19,69 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 )
 
 // -------------------------------------------------------------------------
-// COLLECTOR CONFIG
+// ZONE COLLECTOR CONFIG
 // -------------------------------------------------------------------------
 
-// CollectorConfig holds the shared parameters for constructing a collector.
-// CF and Loki are consumer-declared interfaces, not concrete pointers, so the
-// composition root (main.go) passes the real clients while tests substitute
-// fakes. The concrete *cloudflare.Client and *loki.Client satisfy them.
-type CollectorConfig struct {
-	CF             cloudflareQuerier
-	Loki           logPusher
-	ZoneID         string
-	ZoneName       string
-	PollInterval   time.Duration
-	BackfillWindow time.Duration
-	BatchSize      int
+// ZoneCollectorConfig holds the parameters for constructing a zone-scoped
+// collector (firewall or HTTP). CF is a consumer-declared interface, not a
+// concrete pointer, so the composition root (main.go) passes the real
+// *cloudflare.Client while tests substitute fakes.
+type ZoneCollectorConfig struct {
+	CommonConfig
+	CF       cloudflareQuerier
+	ZoneID   string
+	ZoneName string
 }
 
 // -------------------------------------------------------------------------
 // FIREWALL COLLECTOR
 // -------------------------------------------------------------------------
 
-// FirewallCollector polls Cloudflare for firewall events and ships them to Loki.
+// FirewallCollector polls Cloudflare for firewall events and ships them to
+// Loki. The base's scope is the zone name.
 type FirewallCollector struct {
-	cf           firewallQuerier
-	loki         logPusher
-	zoneID       string
-	zoneName     string
-	pollInterval time.Duration
-	lastSeen     time.Time
-	batchSize    int
+	base
+	cf       firewallQuerier
+	zoneID   string
+	lastSeen time.Time
 }
 
 // NewFirewallCollector creates a firewall event collector for the given zone
 // with the backfill window applied to the initial poll.
-func NewFirewallCollector(cfg CollectorConfig) *FirewallCollector {
-	return &FirewallCollector{
-		cf:           cfg.CF,
-		loki:         cfg.Loki,
-		zoneID:       cfg.ZoneID,
-		zoneName:     cfg.ZoneName,
-		pollInterval: cfg.PollInterval,
-		lastSeen:     time.Now().UTC().Add(-cfg.BackfillWindow),
-		batchSize:    cfg.BatchSize,
+func NewFirewallCollector(cfg ZoneCollectorConfig) *FirewallCollector {
+	c := &FirewallCollector{
+		base: newBase(cfg.CommonConfig, identity{
+			name:     "Firewall",
+			stream:   DatasetFirewall.String(),
+			scopeKey: "zone",
+			scope:    cfg.ZoneName,
+			record:   "firewall event",
+		}),
+		cf:     cfg.CF,
+		zoneID: cfg.ZoneID,
 	}
+	c.lastSeen = c.cursorStart()
+	return c
 }
 
-// Run starts the polling loop and blocks until ctx is cancelled. Implements
-// the lifecycle.Service interface.
+// Run polls on the configured interval and blocks until ctx is cancelled.
+// Implements the lifecycle.Runner interface.
 func (c *FirewallCollector) Run(ctx context.Context) error {
-	slog.Info("Firewall collector started",
-		"zone", c.zoneName,
-		"poll_interval", c.pollInterval,
-		"backfill_from", c.lastSeen.Format(time.RFC3339),
-	)
-
-	// --- Initial poll on startup ---
-	c.poll(ctx)
-
-	ticker := time.NewTicker(c.pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("Firewall collector stopped")
-			return nil
-		case <-ticker.C:
-			c.poll(ctx)
-		}
-	}
+	return c.run(ctx, c.lastSeen, c.poll)
 }
 
 // poll executes a single firewall event collection cycle within a traced span.
 func (c *FirewallCollector) poll(ctx context.Context) {
 	ctx, span := telemetry.StartSpan(ctx, "firewall.poll",
 		telemetry.AttrDataset.String(DatasetFirewall.String()),
-		attribute.String("cflog.zone", c.zoneName),
+		c.scopeAttr(),
 	)
 	defer span.End()
 
@@ -111,18 +89,11 @@ func (c *FirewallCollector) poll(ctx context.Context) {
 	until := time.Now().UTC()
 
 	events, err := c.cf.QueryFirewallEvents(ctx, c.zoneID, c.lastSeen, until)
+	c.recordPoll(DatasetFirewall, start, err)
 	if err != nil {
-		slog.ErrorContext(ctx, "Firewall poll failed", "zone", c.zoneName, "error", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		metrics.PollTotal.WithLabelValues(DatasetFirewall.String(), c.zoneName, "error").Inc()
-		metrics.PollDuration.WithLabelValues(DatasetFirewall.String(), c.zoneName).Observe(time.Since(start).Seconds())
+		c.fail(ctx, span, "Firewall poll failed", err)
 		return
 	}
-
-	metrics.PollTotal.WithLabelValues(DatasetFirewall.String(), c.zoneName, "success").Inc()
-	metrics.PollDuration.WithLabelValues(DatasetFirewall.String(), c.zoneName).Observe(time.Since(start).Seconds())
-	metrics.LastPollTimestamp.WithLabelValues(DatasetFirewall.String(), c.zoneName).Set(float64(time.Now().Unix()))
 
 	span.SetAttributes(attribute.Int("cflog.event_count", len(events)))
 
@@ -133,38 +104,24 @@ func (c *FirewallCollector) poll(ctx context.Context) {
 
 	slog.InfoContext(ctx, "Firewall events fetched", "count", len(events))
 
-	// --- Ship events to Loki in batches ---
-	if err := c.shipToLoki(ctx, events); err != nil {
-		slog.ErrorContext(ctx, "Failed to ship firewall events to Loki", "error", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+	// --- Ship events to Loki in batches, then count them and advance ---
+	if err := shipThenCommit(ctx, &c.base, events, func() {
+		for i := range events {
+			metrics.FirewallEventsTotal.WithLabelValues(events[i].Action, c.scope).Inc()
+		}
+
+		// Advance cursor to the last event's timestamp.
+		lastEvent := events[len(events)-1]
+		if t, ok := parseEventTime(lastEvent.Datetime); ok {
+			c.lastSeen = t
+		} else {
+			slog.WarnContext(ctx, "Unparseable firewall event timestamp, cursor not advanced",
+				"zone", c.scope, "datetime", lastEvent.Datetime)
+		}
+	}); err != nil {
+		c.fail(ctx, span, "Failed to ship firewall events to Loki", err)
 		return
 	}
 
 	slog.InfoContext(ctx, "Firewall events pushed to Loki", "count", len(events))
-
-	// --- Update metrics and cursor ---
-	for i := range events {
-		metrics.FirewallEventsTotal.WithLabelValues(events[i].Action, c.zoneName).Inc()
-	}
-
-	// --- Advance cursor to the last event's timestamp ---
-	lastEvent := events[len(events)-1]
-	if t, ok := parseEventTime(lastEvent.Datetime); ok {
-		c.lastSeen = t
-	} else {
-		slog.WarnContext(ctx, "Unparseable firewall event timestamp, cursor not advanced",
-			"zone", c.zoneName, "datetime", lastEvent.Datetime)
-	}
-}
-
-// shipToLoki sends firewall events to Loki as JSON log lines in batches.
-func (c *FirewallCollector) shipToLoki(ctx context.Context, events []cloudflare.FirewallEvent) error {
-	labels := map[string]string{
-		"job":  "cloudflare",
-		"type": DatasetFirewall.String(),
-		"zone": c.zoneName,
-	}
-
-	return shipJSON(ctx, c.loki, c.batchSize, labels, events, "Failed to marshal firewall event")
 }

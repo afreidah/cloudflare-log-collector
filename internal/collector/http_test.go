@@ -18,26 +18,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/loki"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
-
-	"github.com/prometheus/client_golang/prometheus"
-	io_prometheus "github.com/prometheus/client_model/go"
 )
 
-// httpTestConfig returns a CollectorConfig for HTTP collector tests with the
-// given Loki client and batch size.
-func httpTestConfig(lokiClient *loki.Client, batchSize int) CollectorConfig {
-	return CollectorConfig{
-		Loki:           lokiClient,
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      batchSize,
+// httpTestConfig returns a ZoneCollectorConfig for HTTP collector tests with
+// the given Loki client and batch size.
+func httpTestConfig(lokiClient *loki.Client, batchSize int) ZoneCollectorConfig {
+	common := testCommon(lokiClient)
+	common.BatchSize = batchSize
+	return ZoneCollectorConfig{
+		CommonConfig: common,
+		ZoneID:       "zone1",
+		ZoneName:     "example.com",
 	}
 }
 
@@ -166,9 +161,9 @@ func TestShipToLoki_SendsJSONEntries(t *testing.T) {
 		},
 	}
 
-	err := c.shipToLoki(context.Background(), groups)
+	err := shipThenCommit(context.Background(), &c.base, groups, nil)
 	if err != nil {
-		t.Fatalf("shipToLoki() error = %v", err)
+		t.Fatalf("shipThenCommit() error = %v", err)
 	}
 
 	if len(received) != 1 {
@@ -244,9 +239,9 @@ func TestShipToLoki_Batching(t *testing.T) {
 		}
 	}
 
-	err := c.shipToLoki(context.Background(), groups)
+	err := shipThenCommit(context.Background(), &c.base, groups, nil)
 	if err != nil {
-		t.Fatalf("shipToLoki() error = %v", err)
+		t.Fatalf("shipThenCommit() error = %v", err)
 	}
 
 	if requestCount != 3 {
@@ -263,9 +258,9 @@ func TestShipToLoki_EmptyGroups(t *testing.T) {
 	lokiClient := loki.NewClient(ts.URL, "fake")
 	c := NewHTTPCollector(httpTestConfig(lokiClient, 100))
 
-	err := c.shipToLoki(context.Background(), nil)
+	err := shipThenCommit[cloudflare.HTTPRequestGroup](context.Background(), &c.base, nil, nil)
 	if err != nil {
-		t.Fatalf("shipToLoki() with empty groups should not error, got: %v", err)
+		t.Fatalf("shipThenCommit() with empty groups should not error, got: %v", err)
 	}
 }
 
@@ -291,27 +286,8 @@ func TestShipToLoki_ServerError(t *testing.T) {
 		},
 	}
 
-	err := c.shipToLoki(context.Background(), groups)
+	err := shipThenCommit(context.Background(), &c.base, groups, nil)
 	if err == nil {
 		t.Error("expected error for Loki HTTP 500")
-	}
-}
-
-// -------------------------------------------------------------------------
-// HELPERS
-// -------------------------------------------------------------------------
-
-// assertCounterValue reads the current value of a Prometheus counter and asserts
-// it matches the expected value.
-func assertCounterValue(t *testing.T, counter prometheus.Counter, expected float64) {
-	t.Helper()
-
-	var m io_prometheus.Metric
-	if err := counter.Write(&m); err != nil {
-		t.Fatalf("failed to read counter: %v", err)
-	}
-
-	if m.Counter.GetValue() != expected {
-		t.Errorf("counter value = %v, want %v", m.Counter.GetValue(), expected)
 	}
 }

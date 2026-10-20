@@ -236,7 +236,7 @@ The producers are `cloudflare.Client` and `loki.Client` - both exported as concr
 
 **Naming convention.** Single-method interfaces follow the Go `-er` convention: name the interface after its method in agent-noun form. `Push` -> `logPusher`, `QueryFirewallEvents` -> `firewallQuerier`. A composite that unions narrow interfaces is named after the producer concept it stands in for (`cloudflareQuerier`). Names ending in `-Ops`, `-Store`, `-ing`, or other shapes that do not describe an actor get flagged by SonarCloud (rule S8196) and should be renamed.
 
-**Constructor shape.** Consumers store and accept the interfaces, not concrete pointers. The composition root passes the concrete `*cloudflare.Client` / `*loki.Client`, which satisfy the interfaces implicitly. Because the firewall and HTTP collectors share one `CollectorConfig` bag, the bag's `CF` field is the composite `cloudflareQuerier`; each collector narrows it to the single querier it calls when storing the field (interface-to-interface assignment is legal when the source method set is a superset).
+**Constructor shape.** Consumers store and accept the interfaces, not concrete pointers. The composition root passes the concrete `*cloudflare.Client` / `*loki.Client`, which satisfy the interfaces implicitly. Because the firewall and HTTP collectors share one `ZoneCollectorConfig` bag, the bag's `CF` field is the composite `cloudflareQuerier`; each collector narrows it to the single querier it calls when storing the field (interface-to-interface assignment is legal when the source method set is a superset).
 
 ```go
 // internal/collector/consumer_interfaces.go
@@ -248,7 +248,7 @@ type logPusher interface {
     Push(ctx context.Context, labels map[string]string, entries []loki.Entry) error
 }
 
-// cloudflareQuerier composes the zone-scoped queriers for the shared CollectorConfig.
+// cloudflareQuerier composes the zone-scoped queriers for the shared ZoneCollectorConfig.
 type cloudflareQuerier interface {
     firewallQuerier
     httpQuerier
@@ -256,8 +256,8 @@ type cloudflareQuerier interface {
 
 // internal/collector/firewall.go
 type FirewallCollector struct {
-    cf   firewallQuerier // narrowed from CollectorConfig.CF
-    loki logPusher
+    base                 // shared settings and identity; holds the logPusher
+    cf   firewallQuerier // narrowed from ZoneCollectorConfig.CF
     // ...
 }
 ```
@@ -278,9 +278,11 @@ If none apply - single impl, single consumer, no test fake, no cycle, no boundar
 
 ### Constructor Patterns
 
-**Config and Deps bags.** A constructor with **four or more parameters**, or with two or more same-typed primitives whose call-site order is ambiguous, takes a single config/deps struct instead of a positional list - named fields document each argument and make transposition impossible. `CollectorConfig` and `AuditCollectorConfig` are the examples: each carries the client interfaces, the zone/account identity, and the polling parameters. `context.Context` is never stored in such a struct; it stays the first positional argument of the methods that need it (`Run(ctx)`, `poll(ctx)`).
+**Config and Deps bags.** A constructor with **four or more parameters**, or with two or more same-typed primitives whose call-site order is ambiguous, takes a single config/deps struct instead of a positional list - named fields document each argument and make transposition impossible. `ZoneCollectorConfig`, `AuditCollectorConfig`, and `RUMCollectorConfig` are the examples: each embeds the `CommonConfig` every collector shares (Loki client, poll interval, backfill window, batch size) and adds its own querier and zone/account/site identity. A setting every collector needs belongs in `CommonConfig`, not repeated per bag. `context.Context` is never stored in such a struct; it stays the first positional argument of the methods that need it (`Run(ctx)`, `poll(ctx)`).
 
-**Composition root, no DI framework.** `cmd/cloudflare-log-collector/main.go` is the single composition root. It constructs the concrete `*cloudflare.Client` and `*loki.Client` once, builds a `CollectorConfig` per zone, and registers each collector with the `lifecycle.Manager`. There is no dependency-injection container; wiring is explicit and read top-to-bottom in `main`.
+**Composition root, no DI framework.** `cmd/cloudflare-log-collector/main.go` is the single composition root. It constructs the concrete `*cloudflare.Client` and `*loki.Client` once, builds one `CommonConfig` and a per-zone/account/site config around it, and registers each collector with the `lifecycle.Manager`. There is no dependency-injection container; wiring is explicit and read top-to-bottom in `main`.
+
+**Shared collector behavior lives in the base.** Every collector embeds `base` (`internal/collector/base.go`), built by `newBase` from its `CommonConfig` and an `identity` (display name, Loki stream type, scope key and name, record noun). The base owns what is the same for all of them: the poll loop (`run`), poll-outcome metrics (`recordPoll`), the span scope attribute, error reporting (`fail`), the backfill cursor start, and the Loki stream labels used by `shipThenCommit`. A collector keeps only what is its own - its querier, its IDs, and its cursor state - and should not reimplement anything the base provides.
 
 **Validation lives in config, not constructors.** Constructors here do not panic on nil and do not re-validate - operator-facing invariants (missing API token, empty zone list, missing Loki endpoint) are checked once in `config.setDefaultsAndValidate`, which gathers errors with `errors.Join` and returns them so `main` can report and exit. A constructor trusts that `main` passed it validated, non-nil dependencies.
 
@@ -336,10 +338,14 @@ cmd/cloudflare-log-collector/   # Binary entry point and composition root: confi
                                 # registration, metrics/health server, signal handling
 internal/
   config/                       # YAML + ${ENV} config: types, defaults, validation
-  cloudflare/                   # Cloudflare GraphQL + REST Audit Logs client (producer)
+  cloudflare/                   # Cloudflare GraphQL + REST Audit Logs client (producer);
+                                # shared dataset query + GraphQL transport in graphql.go
   loki/                         # Loki push API client (producer)
-  collector/                    # Pollers: firewall, http, audit. Consumer interfaces in
-                                # consumer_interfaces.go; shared cursor helpers in cursor.go
+  retry/                        # HTTP retry policy and attempt loop shared by both clients
+  collector/                    # Pollers: firewall, http, audit, rum. Shared collector base
+                                # (config, identity, poll loop, poll metrics) in base.go;
+                                # ship-then-commit in shipping.go; consumer interfaces in
+                                # consumer_interfaces.go; cursor helpers in cursor.go
   lifecycle/                    # Background service supervisor (Runner / Stopper)
   metrics/                      # Prometheus metric definitions (promauto)
   telemetry/                    # OTel tracer init, span helpers, slog TraceHandler
@@ -351,7 +357,8 @@ internal/
 |---|---|---|
 | `cmd/` | Everything | Composition root: load config, build clients, register collectors, run servers |
 | `collector/` | `cloudflare`, `loki`, `metrics`, `telemetry` | Poll a dataset, ship to Loki, update metrics, advance the seek cursor |
-| `cloudflare/`, `loki/` | `telemetry` (and `metrics` for loki) | Producer clients: HTTP, retry/backoff, response parsing, client spans |
+| `cloudflare/`, `loki/` | `retry`, `telemetry` (and `metrics` for loki) | Producer clients: HTTP, response parsing, client spans |
+| `retry/` | nothing app-specific | HTTP retry policy (retryable statuses, backoff) and the attempt loop |
 | `lifecycle/` | nothing app-specific | Supervise goroutines: panic recovery, restart, ordered stop |
 | `metrics/` | nothing app-specific | Prometheus metric variables |
 | `telemetry/` | `config` | Tracer setup, span helpers, trace-to-log correlation handler |
@@ -377,20 +384,34 @@ if err := json.Unmarshal(body, &resp); err != nil {
 
 ### Retry and Backoff
 
-Both producer clients retry transient failures (HTTP 429, 502, 503, 504) with
-exponential backoff up to `maxRetries`, honoring the `Retry-After` header when
-present. The request is rebuilt for every attempt so no per-request state leaks
-across retries, and the retry sleep selects on `ctx.Done()` so a cancelled
+Both producer clients retry transient failures (HTTP 429, 502, 503, 504) through
+`retry.Policy.Do`, which owns the attempt loop: exponential backoff from
+`BaseDelay` up to `MaxRetries`, honoring the `Retry-After` header when present.
+Each client supplies one attempt - building its request and reading the response
+its own way - and the request is rebuilt for every attempt so no per-request
+state leaks across retries. The backoff selects on `ctx.Done()` so a cancelled
 context aborts the wait. Non-retryable statuses and exhausted retries return the
-last response for the caller to interpret.
+last response for the caller to interpret; an attempt that fails outright (the
+request cannot be built or sent) is not retried.
+
+Clients hold their policy as a field set to `retry.Default`. Tests swap in a
+millisecond-scale `retry.Policy` to exercise retries without real waits.
 
 ### Span Error Recording
 
-Record errors on OpenTelemetry spans for visibility in Tempo:
+Mark failed spans with `telemetry.FailSpan(span, err)`, which records the error
+and sets the span status so Tempo flags it. Every error path that returns or
+abandons work fails its span - including early ones such as a request that
+could not be marshaled.
+
+In a collector, use the base's `fail`, which also logs the error with the
+collector's scope so the log line and the trace always agree:
 
 ```go
-span.RecordError(err)
-span.SetStatus(codes.Error, err.Error())
+if err != nil {
+    c.fail(ctx, span, "Firewall poll failed", err)
+    return
+}
 ```
 
 ### Background Operation Errors
@@ -452,8 +473,8 @@ call so an early return cannot leave the span open.
 
 ```go
 ctx, span := telemetry.StartSpan(ctx, "firewall.poll",
-    telemetry.AttrDataset.String("firewall"),
-    attribute.String("cflog.zone", c.zoneName),
+    telemetry.AttrDataset.String(DatasetFirewall.String()),
+    c.scopeAttr(), // cflog.zone / cflog.account / cflog.site from the base
 )
 defer span.End()
 ```
@@ -482,14 +503,15 @@ agent) belong in the Loki log line body, never as span attributes.
 
 ### Recording Errors
 
-Record span errors with the `RecordError` + `SetStatus` pair so trace UIs flag
-the span as failing. The accompanying `slog.ErrorContext` log line carries the
-error text and the trace correlation links the two:
+Record span errors with `telemetry.FailSpan(span, err)` so trace UIs flag the
+span as failing; it is the one place the `RecordError` + `SetStatus` pair is
+written. In a collector, `c.fail(ctx, span, msg, err)` does that and emits the
+accompanying `slog.ErrorContext` line, so the log carries the error text and
+trace correlation links the two (see Span Error Recording above):
 
 ```go
 if err != nil {
-    span.RecordError(err)
-    span.SetStatus(codes.Error, err.Error())
+    telemetry.FailSpan(span, err)
     return err
 }
 ```
@@ -545,7 +567,8 @@ poll window.
 
 - Test files live alongside the code they test: `client_test.go`, `http_test.go`
 - Use `httptest.NewServer` to mock external APIs (Cloudflare, Loki)
-- Construct collectors through `CollectorConfig` / `AuditCollectorConfig`, injecting `cloudflare.NewTestClient(server.URL, token)` and `loki.NewClient(server.URL, tenant)` - both satisfy the consumer interfaces
+- Construct collectors through `ZoneCollectorConfig` / `AuditCollectorConfig` / `RUMCollectorConfig`, with the shared settings from `testCommon(push)` (adjust a field when a test needs a different value), injecting `cloudflare.NewTestClient(server.URL, token)` and `loki.NewClient(server.URL, tenant)` or the hand-written fakes - all satisfy the consumer interfaces
+- Shared fixtures and assertions (`testCommon`, `assertCounterValue`, `assertGaugeValue`) live in `internal/collector/helpers_test.go`; add new shared helpers there rather than in one test file
 - Test names follow `TestFunctionName_Scenario` convention
 - Use standard `testing.T` methods, not external assertion libraries
 
@@ -693,27 +716,28 @@ package collector
 // -------------------------------------------------------------------------
 
 // HTTPCollector polls Cloudflare for HTTP traffic stats, updates Prometheus
-// gauges, and ships raw traffic data to Loki.
+// counters, and ships raw traffic data to Loki. The base's scope is the zone
+// name.
 type HTTPCollector struct {
-    cf           httpQuerier
-    loki         logPusher
-    pollInterval time.Duration
-    lastSeen     time.Time
-    batchSize    int
+    base
+    cf       httpQuerier
+    zoneID   string
+    lastSeen time.Time
 }
 
 // poll executes a single HTTP traffic collection cycle within a traced span.
 func (c *HTTPCollector) poll(ctx context.Context) {
     ctx, span := telemetry.StartSpan(ctx, "http.poll",
-        telemetry.AttrDataset.String("http"),
+        telemetry.AttrDataset.String(DatasetHTTP.String()),
+        c.scopeAttr(),
     )
     defer span.End()
 
+    start := time.Now()
     groups, err := c.cf.QueryHTTPRequests(ctx, c.zoneID, c.lastSeen, time.Now().UTC())
+    c.recordPoll(DatasetHTTP, start, err)
     if err != nil {
-        slog.ErrorContext(ctx, "HTTP traffic poll failed", "zone", c.zoneName, "error", err)
-        span.RecordError(err)
-        span.SetStatus(codes.Error, err.Error())
+        c.fail(ctx, span, "HTTP traffic poll failed", err)
         return
     }
     // ...

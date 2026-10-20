@@ -20,6 +20,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -124,6 +125,14 @@ func StartClientSpan(ctx context.Context, name string, attrs ...attribute.KeyVal
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(attrs...),
 	)
+}
+
+// FailSpan marks span as failed by err: the error is recorded as a span event
+// and the span status is set to Error with err's message, so the span shows as
+// failed in Tempo and carries the cause.
+func FailSpan(span trace.Span, err error) {
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
 }
 
 // -------------------------------------------------------------------------

@@ -92,14 +92,11 @@ func TestFirewallPoll_ViaFakeQuerier(t *testing.T) {
 	}
 	push := &fakePusher{}
 
-	c := NewFirewallCollector(CollectorConfig{
-		CF:             cf,
-		Loki:           push,
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
+	c := NewFirewallCollector(ZoneCollectorConfig{
+		CommonConfig: testCommon(push),
+		CF:           cf,
+		ZoneID:       "zone1",
+		ZoneName:     "example.com",
 	})
 	c.poll(context.Background())
 
@@ -121,14 +118,11 @@ func TestFirewallPoll_ViaFakeQuerier_Error(t *testing.T) {
 	cf := &fakeCloudflare{err: errors.New("boom")}
 	push := &fakePusher{}
 
-	c := NewFirewallCollector(CollectorConfig{
-		CF:             cf,
-		Loki:           push,
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
+	c := NewFirewallCollector(ZoneCollectorConfig{
+		CommonConfig: testCommon(push),
+		CF:           cf,
+		ZoneID:       "zone1",
+		ZoneName:     "example.com",
 	})
 	c.poll(context.Background())
 
@@ -159,14 +153,11 @@ func TestHTTPPoll_ViaFakeQuerier(t *testing.T) {
 	}
 	push := &fakePusher{}
 
-	c := NewHTTPCollector(CollectorConfig{
-		CF:             cf,
-		Loki:           push,
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
+	c := NewHTTPCollector(ZoneCollectorConfig{
+		CommonConfig: testCommon(push),
+		CF:           cf,
+		ZoneID:       "zone1",
+		ZoneName:     "example.com",
 	})
 	c.poll(context.Background())
 
@@ -196,13 +187,10 @@ func TestAuditPoll_ViaFakeQuerier(t *testing.T) {
 	push := &fakePusher{}
 
 	c := NewAuditCollector(AuditCollectorConfig{
-		CF:             cf,
-		Loki:           push,
-		AccountID:      "acct1",
-		AccountName:    "acme",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
+		CommonConfig: testCommon(push),
+		CF:           cf,
+		AccountID:    "acct1",
+		AccountName:  "acme",
 	})
 	c.poll(context.Background())
 

@@ -27,13 +27,12 @@ import (
 // auditTestConfig returns an AuditCollectorConfig for audit tests with the
 // given Loki client and batch size.
 func auditTestConfig(lokiClient *loki.Client, batchSize int) AuditCollectorConfig {
+	common := testCommon(lokiClient)
+	common.BatchSize = batchSize
 	return AuditCollectorConfig{
-		Loki:           lokiClient,
-		AccountID:      "account1",
-		AccountName:    "test-account",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      batchSize,
+		CommonConfig: common,
+		AccountID:    "account1",
+		AccountName:  "test-account",
 	}
 }
 
@@ -84,9 +83,9 @@ func TestAuditShipToLoki_SendsJSONEntries(t *testing.T) {
 		},
 	}
 
-	err := c.shipToLoki(context.Background(), events)
+	err := shipThenCommit(context.Background(), &c.base, events, nil)
 	if err != nil {
-		t.Fatalf("shipToLoki() error = %v", err)
+		t.Fatalf("shipThenCommit() error = %v", err)
 	}
 
 	// --- Verify push request structure ---
@@ -156,9 +155,9 @@ func TestAuditShipToLoki_Batching(t *testing.T) {
 		}
 	}
 
-	err := c.shipToLoki(context.Background(), events)
+	err := shipThenCommit(context.Background(), &c.base, events, nil)
 	if err != nil {
-		t.Fatalf("shipToLoki() error = %v", err)
+		t.Fatalf("shipThenCommit() error = %v", err)
 	}
 
 	if requestCount != 3 {
@@ -187,7 +186,7 @@ func TestAuditShipToLoki_ServerError(t *testing.T) {
 		},
 	}
 
-	err := c.shipToLoki(context.Background(), events)
+	err := shipThenCommit(context.Background(), &c.base, events, nil)
 	if err == nil {
 		t.Error("expected error for Loki HTTP 500")
 	}
@@ -220,9 +219,9 @@ func TestAuditShipToLoki_InvalidTimestamp(t *testing.T) {
 		},
 	}
 
-	err := c.shipToLoki(context.Background(), events)
+	err := shipThenCommit(context.Background(), &c.base, events, nil)
 	if err != nil {
-		t.Fatalf("shipToLoki() error = %v", err)
+		t.Fatalf("shipThenCommit() error = %v", err)
 	}
 
 	if len(received) == 0 {
@@ -297,14 +296,8 @@ func TestNewAuditCollector_BackfillWindow(t *testing.T) {
 	lokiClient := loki.NewClient("http://localhost:3100", "fake")
 
 	backfillWindow := 2 * time.Hour
-	cfg := AuditCollectorConfig{
-		Loki:           lokiClient,
-		AccountID:      "account1",
-		AccountName:    "test-account",
-		PollInterval:   time.Minute,
-		BackfillWindow: backfillWindow,
-		BatchSize:      100,
-	}
+	cfg := auditTestConfig(lokiClient, 100)
+	cfg.BackfillWindow = backfillWindow
 
 	before := time.Now().UTC()
 	c := NewAuditCollector(cfg)

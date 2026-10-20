@@ -21,9 +21,7 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
-	io_prometheus "github.com/prometheus/client_model/go"
 )
 
 // fakeRUMQuerier implements rumQuerier with canned per-dataset responses and
@@ -51,14 +49,11 @@ func (f *fakeRUMQuerier) QueryRUMWebVitals(_ context.Context, _, _ string, _, _ 
 // rumTestCollector builds a RUM collector wired to the given fakes.
 func rumTestCollector(cf rumQuerier, push logPusher) *RUMCollector {
 	return NewRUMCollector(RUMCollectorConfig{
-		CF:             cf,
-		Loki:           push,
-		AccountID:      "acct1",
-		SiteTag:        "site1",
-		SiteName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      100,
+		CommonConfig: testCommon(push),
+		CF:           cf,
+		AccountID:    "acct1",
+		SiteTag:      "site1",
+		SiteName:     "example.com",
 	})
 }
 
@@ -221,23 +216,5 @@ func TestRUMRun_InitialPollThenCancel(t *testing.T) {
 	if cf.pageloadCalls < 1 || cf.webVitalsCalls < 1 {
 		t.Errorf("initial poll should query both datasets; pageloads=%d webvitals=%d",
 			cf.pageloadCalls, cf.webVitalsCalls)
-	}
-}
-
-// -------------------------------------------------------------------------
-// HELPERS
-// -------------------------------------------------------------------------
-
-// assertGaugeValue reads the current value of a Prometheus gauge and asserts it
-// matches the expected value.
-func assertGaugeValue(t *testing.T, gauge prometheus.Gauge, expected float64) {
-	t.Helper()
-
-	var m io_prometheus.Metric
-	if err := gauge.Write(&m); err != nil {
-		t.Fatalf("failed to read gauge: %v", err)
-	}
-	if m.Gauge.GetValue() != expected {
-		t.Errorf("gauge value = %v, want %v", m.Gauge.GetValue(), expected)
 	}
 }

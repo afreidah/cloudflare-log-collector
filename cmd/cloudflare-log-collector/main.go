@@ -177,21 +177,26 @@ type namedRunner struct {
 
 // plannedCollectors builds the full ordered set of collector registrations from
 // config: a firewall and HTTP collector per zone, plus an audit collector per
-// account when audit logging is enabled. Keeping the plan a pure function of
-// config and clients lets tests assert the registration set without standing up
-// a lifecycle manager.
+// account and a RUM collector per site when those are enabled. Keeping the plan
+// a pure function of config and clients lets tests assert the registration set
+// without standing up a lifecycle manager.
 func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Client) []namedRunner {
 	var planned []namedRunner
 
+	// --- Settings every collector shares ---
+	common := collector.CommonConfig{
+		Loki:           lk,
+		PollInterval:   cfg.Cloudflare.PollInterval,
+		BackfillWindow: cfg.Cloudflare.BackfillWindow,
+		BatchSize:      cfg.Loki.BatchSize,
+	}
+
 	for _, zone := range cfg.Cloudflare.Zones {
-		cc := collector.CollectorConfig{
-			CF:             cf,
-			Loki:           lk,
-			ZoneID:         zone.ID,
-			ZoneName:       zone.Name,
-			PollInterval:   cfg.Cloudflare.PollInterval,
-			BackfillWindow: cfg.Cloudflare.BackfillWindow,
-			BatchSize:      cfg.Loki.BatchSize,
+		cc := collector.ZoneCollectorConfig{
+			CommonConfig: common,
+			CF:           cf,
+			ZoneID:       zone.ID,
+			ZoneName:     zone.Name,
 		}
 
 		planned = append(planned,
@@ -203,13 +208,10 @@ func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Clien
 	if cfg.Cloudflare.AuditLogs.Enabled {
 		for _, account := range cfg.Cloudflare.AuditLogs.Accounts {
 			ac := collector.AuditCollectorConfig{
-				CF:             cf,
-				Loki:           lk,
-				AccountID:      account.ID,
-				AccountName:    account.Name,
-				PollInterval:   cfg.Cloudflare.PollInterval,
-				BackfillWindow: cfg.Cloudflare.BackfillWindow,
-				BatchSize:      cfg.Loki.BatchSize,
+				CommonConfig: common,
+				CF:           cf,
+				AccountID:    account.ID,
+				AccountName:  account.Name,
 			}
 
 			planned = append(planned, namedRunner{
@@ -222,14 +224,11 @@ func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Clien
 	if cfg.Cloudflare.WebAnalytics.Enabled {
 		for _, site := range cfg.Cloudflare.WebAnalytics.Sites {
 			rc := collector.RUMCollectorConfig{
-				CF:             cf,
-				Loki:           lk,
-				AccountID:      cfg.Cloudflare.WebAnalytics.AccountID,
-				SiteTag:        site.SiteTag,
-				SiteName:       site.Name,
-				PollInterval:   cfg.Cloudflare.PollInterval,
-				BackfillWindow: cfg.Cloudflare.BackfillWindow,
-				BatchSize:      cfg.Loki.BatchSize,
+				CommonConfig: common,
+				CF:           cf,
+				AccountID:    cfg.Cloudflare.WebAnalytics.AccountID,
+				SiteTag:      site.SiteTag,
+				SiteName:     site.Name,
 			}
 
 			planned = append(planned, namedRunner{

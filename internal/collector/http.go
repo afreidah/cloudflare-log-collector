@@ -22,7 +22,6 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 )
 
 // -------------------------------------------------------------------------
@@ -30,62 +29,46 @@ import (
 // -------------------------------------------------------------------------
 
 // HTTPCollector polls Cloudflare for HTTP traffic stats, updates Prometheus
-// gauges, and ships raw traffic data to Loki.
+// counters, and ships raw traffic data to Loki. The base's scope is the zone
+// name.
 type HTTPCollector struct {
-	cf           httpQuerier
-	loki         logPusher
-	zoneID       string
-	zoneName     string
-	pollInterval time.Duration
-	lastSeen     time.Time
-	batchSize    int
+	base
+	cf       httpQuerier
+	zoneID   string
+	lastSeen time.Time
 }
 
 // NewHTTPCollector creates an HTTP traffic collector for the given zone
 // with the backfill window applied to the initial poll.
-func NewHTTPCollector(cfg CollectorConfig) *HTTPCollector {
-	return &HTTPCollector{
-		cf:           cfg.CF,
-		loki:         cfg.Loki,
-		zoneID:       cfg.ZoneID,
-		zoneName:     cfg.ZoneName,
-		pollInterval: cfg.PollInterval,
-		lastSeen:     time.Now().UTC().Add(-cfg.BackfillWindow),
-		batchSize:    cfg.BatchSize,
+func NewHTTPCollector(cfg ZoneCollectorConfig) *HTTPCollector {
+	c := &HTTPCollector{
+		base: newBase(cfg.CommonConfig, identity{
+			name: "HTTP",
+			// Ships as "http_traffic", not the dataset name, so existing Loki
+			// queries keep matching.
+			stream:   "http_traffic",
+			scopeKey: "zone",
+			scope:    cfg.ZoneName,
+			record:   "HTTP traffic group",
+		}),
+		cf:     cfg.CF,
+		zoneID: cfg.ZoneID,
 	}
+	c.lastSeen = c.cursorStart()
+	return c
 }
 
-// Run starts the polling loop and blocks until ctx is cancelled. Implements
-// the lifecycle.Service interface.
+// Run polls on the configured interval and blocks until ctx is cancelled.
+// Implements the lifecycle.Runner interface.
 func (c *HTTPCollector) Run(ctx context.Context) error {
-	slog.Info("HTTP collector started",
-		"zone", c.zoneName,
-		"poll_interval", c.pollInterval,
-		"backfill_from", c.lastSeen.Format(time.RFC3339),
-	)
-
-	// --- Initial poll on startup ---
-	c.poll(ctx)
-
-	ticker := time.NewTicker(c.pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("HTTP collector stopped")
-			return nil
-		case <-ticker.C:
-			c.poll(ctx)
-		}
-	}
+	return c.run(ctx, c.lastSeen, c.poll)
 }
 
 // poll executes a single HTTP traffic collection cycle within a traced span.
 func (c *HTTPCollector) poll(ctx context.Context) {
 	ctx, span := telemetry.StartSpan(ctx, "http.poll",
 		telemetry.AttrDataset.String(DatasetHTTP.String()),
-		attribute.String("cflog.zone", c.zoneName),
+		c.scopeAttr(),
 	)
 	defer span.End()
 
@@ -93,18 +76,11 @@ func (c *HTTPCollector) poll(ctx context.Context) {
 	until := time.Now().UTC()
 
 	groups, err := c.cf.QueryHTTPRequests(ctx, c.zoneID, c.lastSeen, until)
+	c.recordPoll(DatasetHTTP, start, err)
 	if err != nil {
-		slog.ErrorContext(ctx, "HTTP traffic poll failed", "zone", c.zoneName, "error", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		metrics.PollTotal.WithLabelValues(DatasetHTTP.String(), c.zoneName, "error").Inc()
-		metrics.PollDuration.WithLabelValues(DatasetHTTP.String(), c.zoneName).Observe(time.Since(start).Seconds())
+		c.fail(ctx, span, "HTTP traffic poll failed", err)
 		return
 	}
-
-	metrics.PollTotal.WithLabelValues(DatasetHTTP.String(), c.zoneName, "success").Inc()
-	metrics.PollDuration.WithLabelValues(DatasetHTTP.String(), c.zoneName).Observe(time.Since(start).Seconds())
-	metrics.LastPollTimestamp.WithLabelValues(DatasetHTTP.String(), c.zoneName).Set(float64(time.Now().Unix()))
 
 	span.SetAttributes(attribute.Int("cflog.group_count", len(groups)))
 
@@ -116,19 +92,16 @@ func (c *HTTPCollector) poll(ctx context.Context) {
 
 	slog.InfoContext(ctx, "HTTP traffic data fetched", "groups", len(groups))
 
-	// --- Update Prometheus gauges ---
-	c.updateMetrics(groups)
-
-	// --- Ship raw groups to Loki ---
-	if err := c.shipToLoki(ctx, groups); err != nil {
-		slog.ErrorContext(ctx, "Failed to ship HTTP traffic to Loki", "error", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+	// --- Ship raw groups to Loki, then count the window and advance ---
+	if err := shipThenCommit(ctx, &c.base, groups, func() {
+		c.updateMetrics(groups)
+		c.lastSeen = until
+	}); err != nil {
+		c.fail(ctx, span, "Failed to ship HTTP traffic to Loki", err)
 		return
 	}
 
 	slog.InfoContext(ctx, "HTTP traffic pushed to Loki", "groups", len(groups))
-	c.lastSeen = until
 }
 
 // updateMetrics adds the latest poll window's counts to the cumulative HTTP
@@ -144,21 +117,10 @@ func (c *HTTPCollector) updateMetrics(groups []cloudflare.HTTPRequestGroup) {
 		status := fmt.Sprintf("%d", g.Dimensions.EdgeResponseStatus)
 		country := g.Dimensions.ClientCountryName
 
-		metrics.HTTPRequestsTotal.WithLabelValues(method, status, country, c.zoneName).Add(float64(g.Count))
+		metrics.HTTPRequestsTotal.WithLabelValues(method, status, country, c.scope).Add(float64(g.Count))
 
 		totalEdgeBytes += g.Sum.EdgeResponseBytes
 	}
 
-	metrics.HTTPBytesTotal.WithLabelValues("edge", c.zoneName).Add(float64(totalEdgeBytes))
-}
-
-// shipToLoki sends HTTP traffic groups to Loki as JSON log lines in batches.
-func (c *HTTPCollector) shipToLoki(ctx context.Context, groups []cloudflare.HTTPRequestGroup) error {
-	labels := map[string]string{
-		"job":  "cloudflare",
-		"type": "http_traffic",
-		"zone": c.zoneName,
-	}
-
-	return shipJSON(ctx, c.loki, c.batchSize, labels, groups, "Failed to marshal HTTP traffic group")
+	metrics.HTTPBytesTotal.WithLabelValues("edge", c.scope).Add(float64(totalEdgeBytes))
 }

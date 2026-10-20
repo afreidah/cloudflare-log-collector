@@ -3,9 +3,10 @@
 //
 // Authors: Alex Freidah, Aaron Florey
 //
-// Tests for the Cloudflare GraphQL API client using httptest servers to mock
-// API responses. Covers successful queries, error handling, and response parsing
-// for both firewall events and HTTP traffic datasets.
+// Tests for the Cloudflare API client using httptest servers to mock API
+// responses. Covers successful queries, the variables each dataset query sends,
+// error handling, and response parsing for the firewall and HTTP datasets and
+// the audit logs REST API.
 // -------------------------------------------------------------------------------
 
 package cloudflare
@@ -13,12 +14,15 @@ package cloudflare
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/afreidah/cloudflare-log-collector/internal/retry"
 )
 
 // -------------------------------------------------------------------------
@@ -26,35 +30,20 @@ import (
 // -------------------------------------------------------------------------
 
 func TestQueryFirewallEvents_Success(t *testing.T) {
+	var gotVars map[string]any
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		verifyAuthHeader(t, r)
 		verifyContentType(t, r)
+		gotVars = decodeQueryVariables(t, r)
 
-		resp := graphQLResponse{
-			Data: mustMarshal(t, firewallResponse{
-				Viewer: struct {
-					Zones []struct {
-						FirewallEventsAdaptive []FirewallEvent `json:"firewallEventsAdaptive"`
-					} `json:"zones"`
-				}{
-					Zones: []struct {
-						FirewallEventsAdaptive []FirewallEvent `json:"firewallEventsAdaptive"`
-					}{
-						{
-							FirewallEventsAdaptive: []FirewallEvent{
-								{
-									Action:   "block",
-									ClientIP: "1.2.3.4",
-									Datetime: "2026-03-13T10:00:00Z",
-									RayName:  "abc123",
-								},
-							},
-						},
-					},
-				},
-			}),
-		}
-		writeJSON(t, w, resp)
+		writeJSON(t, w, datasetResponse("zones", "firewallEventsAdaptive", []FirewallEvent{
+			{
+				Action:   "block",
+				ClientIP: "1.2.3.4",
+				Datetime: "2026-03-13T10:00:00Z",
+				RayName:  "abc123",
+			},
+		}))
 	}))
 	t.Cleanup(ts.Close)
 
@@ -75,14 +64,22 @@ func TestQueryFirewallEvents_Success(t *testing.T) {
 	if events[0].ClientIP != "1.2.3.4" {
 		t.Errorf("clientIP = %q, want %q", events[0].ClientIP, "1.2.3.4")
 	}
+
+	// --- The zone, window, and the dataset's limit are sent as variables ---
+	if gotVars["zoneId"] != "test-zone" {
+		t.Errorf("zoneId variable = %v, want test-zone", gotVars["zoneId"])
+	}
+	if gotVars["limit"] != float64(firewallDataset.limit) {
+		t.Errorf("limit variable = %v, want %d", gotVars["limit"], firewallDataset.limit)
+	}
+	if gotVars["since"] == nil || gotVars["until"] == nil {
+		t.Errorf("since/until variables missing: %v", gotVars)
+	}
 }
 
 func TestQueryFirewallEvents_EmptyZones(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := graphQLResponse{
-			Data: mustMarshal(t, firewallResponse{}),
-		}
-		writeJSON(t, w, resp)
+		writeJSON(t, w, map[string]any{"data": map[string]any{"viewer": map[string]any{"zones": []any{}}}})
 	}))
 	t.Cleanup(ts.Close)
 
@@ -107,36 +104,19 @@ func TestQueryHTTPRequests_Success(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		verifyAuthHeader(t, r)
 
-		resp := graphQLResponse{
-			Data: mustMarshal(t, httpRequestResponse{
-				Viewer: struct {
-					Zones []struct {
-						HTTPRequestsAdaptiveGroups []HTTPRequestGroup `json:"httpRequestsAdaptiveGroups"`
-					} `json:"zones"`
-				}{
-					Zones: []struct {
-						HTTPRequestsAdaptiveGroups []HTTPRequestGroup `json:"httpRequestsAdaptiveGroups"`
-					}{
-						{
-							HTTPRequestsAdaptiveGroups: []HTTPRequestGroup{
-								{
-									Count: 42,
-									Dimensions: HTTPRequestDimensions{
-										Datetime:                    "2026-03-13T10:00:00Z",
-										ClientRequestHTTPMethodName: "GET",
-										EdgeResponseStatus:          200,
-									},
-									Sum: HTTPRequestSum{
-										EdgeResponseBytes: 1024,
-									},
-								},
-							},
-						},
-					},
+		writeJSON(t, w, datasetResponse("zones", "httpRequestsAdaptiveGroups", []HTTPRequestGroup{
+			{
+				Count: 42,
+				Dimensions: HTTPRequestDimensions{
+					Datetime:                    "2026-03-13T10:00:00Z",
+					ClientRequestHTTPMethodName: "GET",
+					EdgeResponseStatus:          200,
 				},
-			}),
-		}
-		writeJSON(t, w, resp)
+				Sum: HTTPRequestSum{
+					EdgeResponseBytes: 1024,
+				},
+			},
+		}))
 	}))
 	t.Cleanup(ts.Close)
 
@@ -398,10 +378,7 @@ func TestDoQuery_RequestBody(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		resp := graphQLResponse{
-			Data: mustMarshal(t, firewallResponse{}),
-		}
-		writeJSON(t, w, resp)
+		writeJSON(t, w, datasetResponse("zones", "firewallEventsAdaptive", []FirewallEvent{}))
 	}))
 	t.Cleanup(ts.Close)
 
@@ -429,8 +406,8 @@ func TestDoQuery_RequestBody(t *testing.T) {
 // -------------------------------------------------------------------------
 
 func TestQueryHTTPRequests_TruncationWarning(t *testing.T) {
-	// Build a response with exactly httpQueryLimit groups
-	groups := make([]HTTPRequestGroup, httpQueryLimit)
+	// Build a response with exactly a full page of groups
+	groups := make([]HTTPRequestGroup, httpDataset.limit)
 	for i := range groups {
 		groups[i] = HTTPRequestGroup{
 			Count: 1,
@@ -443,22 +420,7 @@ func TestQueryHTTPRequests_TruncationWarning(t *testing.T) {
 	}
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := graphQLResponse{
-			Data: mustMarshal(t, httpRequestResponse{
-				Viewer: struct {
-					Zones []struct {
-						HTTPRequestsAdaptiveGroups []HTTPRequestGroup `json:"httpRequestsAdaptiveGroups"`
-					} `json:"zones"`
-				}{
-					Zones: []struct {
-						HTTPRequestsAdaptiveGroups []HTTPRequestGroup `json:"httpRequestsAdaptiveGroups"`
-					}{
-						{HTTPRequestsAdaptiveGroups: groups},
-					},
-				},
-			}),
-		}
-		writeJSON(t, w, resp)
+		writeJSON(t, w, datasetResponse("zones", "httpRequestsAdaptiveGroups", groups))
 	}))
 	t.Cleanup(ts.Close)
 
@@ -470,8 +432,47 @@ func TestQueryHTTPRequests_TruncationWarning(t *testing.T) {
 		t.Fatalf("QueryHTTPRequests() error = %v", err)
 	}
 
-	if len(result) != httpQueryLimit {
-		t.Errorf("got %d groups, want %d", len(result), httpQueryLimit)
+	// A full page is still returned in full; the warning only flags it.
+	if len(result) != httpDataset.limit {
+		t.Errorf("got %d groups, want %d", len(result), httpDataset.limit)
+	}
+}
+
+// -------------------------------------------------------------------------
+// DATASET QUERIES
+// -------------------------------------------------------------------------
+
+func TestQueryDataset_MissingFieldReturnsNoRows(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A zone node with no dataset field (e.g. the dataset is not enabled).
+		writeJSON(t, w, map[string]any{"data": map[string]any{"viewer": map[string]any{"zones": []any{map[string]any{}}}}})
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newTestClient(ts.URL, "test-token")
+
+	events, err := client.QueryFirewallEvents(context.Background(), "test-zone",
+		time.Now().Add(-1*time.Hour), time.Now())
+	if err != nil {
+		t.Fatalf("QueryFirewallEvents() error = %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("got %d events, want 0 when the dataset field is absent", len(events))
+	}
+}
+
+func TestQueryDataset_MalformedRowsIsAnError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, datasetResponse("zones", "firewallEventsAdaptive", "not-a-list"))
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newTestClient(ts.URL, "test-token")
+
+	_, err := client.QueryFirewallEvents(context.Background(), "test-zone",
+		time.Now().Add(-1*time.Hour), time.Now())
+	if err == nil || !contains(err.Error(), "firewallEventsAdaptive response parse") {
+		t.Errorf("err = %v, want a firewallEventsAdaptive response parse error", err)
 	}
 }
 
@@ -486,8 +487,58 @@ func TestNewTestClient(t *testing.T) {
 	}
 }
 
-// Retry policy (isRetryable, backoff, Retry-After) is shared and tested in
-// internal/retry.
+// -------------------------------------------------------------------------
+// RETRY
+// -------------------------------------------------------------------------
+
+// The retry policy itself (retryable statuses, backoff, Retry-After) is shared
+// and tested in internal/retry; these cover the client's use of it.
+
+func TestDoQuery_RetriesRateLimitThenSucceeds(t *testing.T) {
+	var requests int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		writeJSON(t, w, datasetResponse("zones", "firewallEventsAdaptive", []FirewallEvent{{Action: "block"}}))
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newTestClient(ts.URL, "test-token")
+	client.retryPolicy = retry.Policy{MaxRetries: 3, BaseDelay: time.Millisecond}
+
+	events, err := client.QueryFirewallEvents(context.Background(), "test-zone",
+		time.Now().Add(-1*time.Hour), time.Now())
+	if err != nil {
+		t.Fatalf("QueryFirewallEvents() error = %v, want success after one retry", err)
+	}
+	if len(events) != 1 {
+		t.Errorf("got %d events, want 1", len(events))
+	}
+	if requests != 2 {
+		t.Errorf("got %d requests, want 2 (one 429, one retry)", requests)
+	}
+}
+
+func TestDoQuery_CancelDuringBackoffReturnsContextError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newTestClient(ts.URL, "test-token")
+	client.retryPolicy = retry.Policy{MaxRetries: 3, BaseDelay: time.Hour}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	t.Cleanup(cancel)
+
+	_, err := client.QueryFirewallEvents(ctx, "test-zone", time.Now().Add(-1*time.Hour), time.Now())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want context.DeadlineExceeded from the cancelled backoff", err)
+	}
+}
 
 // -------------------------------------------------------------------------
 // HELPERS
@@ -525,14 +576,18 @@ func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
 	}
 }
 
-// mustMarshal serializes v to a json.RawMessage, failing the test on error.
-func mustMarshal(t *testing.T, v any) json.RawMessage {
-	t.Helper()
-	data, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
+// datasetResponse wraps rows in the GraphQL envelope a dataset query returns:
+// data.viewer.<scope>[0].<field> = rows, where scope is "zones" or "accounts".
+func datasetResponse(scope, field string, rows any) map[string]any {
+	return map[string]any{
+		"data": map[string]any{
+			"viewer": map[string]any{
+				scope: []any{
+					map[string]any{field: rows},
+				},
+			},
+		},
 	}
-	return data
 }
 
 // contains checks if s contains substr.

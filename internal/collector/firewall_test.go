@@ -17,22 +17,20 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/loki"
 )
 
-// firewallTestConfig returns a CollectorConfig for firewall tests with the
+// firewallTestConfig returns a ZoneCollectorConfig for firewall tests with the
 // given Loki client and batch size.
-func firewallTestConfig(lokiClient *loki.Client, batchSize int) CollectorConfig {
-	return CollectorConfig{
-		Loki:           lokiClient,
-		ZoneID:         "zone1",
-		ZoneName:       "example.com",
-		PollInterval:   time.Minute,
-		BackfillWindow: time.Hour,
-		BatchSize:      batchSize,
+func firewallTestConfig(lokiClient *loki.Client, batchSize int) ZoneCollectorConfig {
+	common := testCommon(lokiClient)
+	common.BatchSize = batchSize
+	return ZoneCollectorConfig{
+		CommonConfig: common,
+		ZoneID:       "zone1",
+		ZoneName:     "example.com",
 	}
 }
 
@@ -65,9 +63,9 @@ func TestFirewallShipToLoki_SendsJSONEntries(t *testing.T) {
 		},
 	}
 
-	err := c.shipToLoki(context.Background(), events)
+	err := shipThenCommit(context.Background(), &c.base, events, nil)
 	if err != nil {
-		t.Fatalf("shipToLoki() error = %v", err)
+		t.Fatalf("shipThenCommit() error = %v", err)
 	}
 
 	// --- Verify push request structure ---
@@ -131,9 +129,9 @@ func TestFirewallShipToLoki_Batching(t *testing.T) {
 		}
 	}
 
-	err := c.shipToLoki(context.Background(), events)
+	err := shipThenCommit(context.Background(), &c.base, events, nil)
 	if err != nil {
-		t.Fatalf("shipToLoki() error = %v", err)
+		t.Fatalf("shipThenCommit() error = %v", err)
 	}
 
 	if requestCount != 3 {
@@ -159,7 +157,7 @@ func TestFirewallShipToLoki_ServerError(t *testing.T) {
 		},
 	}
 
-	err := c.shipToLoki(context.Background(), events)
+	err := shipThenCommit(context.Background(), &c.base, events, nil)
 	if err == nil {
 		t.Error("expected error for Loki HTTP 500")
 	}
@@ -189,9 +187,9 @@ func TestFirewallShipToLoki_InvalidTimestamp(t *testing.T) {
 		},
 	}
 
-	err := c.shipToLoki(context.Background(), events)
+	err := shipThenCommit(context.Background(), &c.base, events, nil)
 	if err != nil {
-		t.Fatalf("shipToLoki() error = %v", err)
+		t.Fatalf("shipThenCommit() error = %v", err)
 	}
 
 	if len(received) == 0 {

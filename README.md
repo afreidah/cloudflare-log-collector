@@ -240,22 +240,24 @@ make clean                  # remove build artifacts
 |       `-- main.go                   # Entry point, config, signal handling
 |-- internal/
 |   |-- cloudflare/
-|   |   |-- client.go                 # Core API client, HTTP transport + retry
-|   |   |-- graphql.go                # Shared GraphQL envelope + executor
-|   |   |-- firewall.go               # firewallEventsAdaptive query
-|   |   |-- http.go                   # httpRequestsAdaptiveGroups query
-|   |   |-- rum.go                     # RUM / Web Analytics queries
+|   |   |-- client.go                 # Core API client, retrying HTTP transport
+|   |   |-- graphql.go                # Shared dataset query + GraphQL transport
+|   |   |-- firewall.go               # firewallEventsAdaptive dataset
+|   |   |-- http.go                   # httpRequestsAdaptiveGroups dataset
+|   |   |-- rum.go                    # RUM / Web Analytics datasets
 |   |   |-- audit.go                  # REST audit logs query
 |   |   |-- client_test.go, rum_test.go, transport_test.go
 |   |-- collector/
-|   |   |-- firewall.go               # Firewall event poller, Loki shipper
-|   |   |-- http.go                   # HTTP traffic poller, counters + Loki
-|   |   |-- audit.go                  # Audit log poller, Loki shipper
-|   |   |-- rum.go                     # RUM poller: counters, vitals, Loki
+|   |   |-- base.go                   # Shared config, identity, poll loop, poll metrics
+|   |   |-- shipping.go               # Ship to Loki, then commit the poll window
+|   |   |-- firewall.go               # Firewall event poller
+|   |   |-- http.go                   # HTTP traffic poller, counters
+|   |   |-- audit.go                  # Audit log poller, boundary dedupe
+|   |   |-- rum.go                    # RUM poller: counters, vitals
 |   |   |-- consumer_interfaces.go    # Narrow consumer-declared interfaces
 |   |   |-- dataset.go                # Typed dataset name constants
 |   |   |-- cursor.go                 # Shared seek-cursor helpers
-|   |   `-- *_test.go
+|   |   `-- *_test.go                 # helpers_test.go holds shared fixtures
 |   |-- config/
 |   |   |-- config.go                 # YAML config with env var expansion
 |   |   `-- config_test.go
@@ -264,7 +266,10 @@ make clean                  # remove build artifacts
 |   |   `-- manager_test.go
 |   |-- loki/
 |   |   |-- client.go                 # Loki push API client
-|   |   `-- client_test.go
+|   |   `-- client_test.go, transport_test.go
+|   |-- retry/
+|   |   |-- retry.go                  # Shared HTTP retry policy + attempt loop
+|   |   `-- retry_test.go
 |   |-- metrics/
 |   |   `-- metrics.go                # Prometheus metric definitions
 |   `-- telemetry/
@@ -294,7 +299,9 @@ make clean                  # remove build artifacts
 
 The Cloudflare GraphQL Analytics API allows 300 queries per 5 minutes. With two queries per poll cycle (firewall + HTTP) per zone at the default 5-minute interval, usage stays well within limits. Free plan adaptive datasets support approximately 24 hours of lookback; the default backfill window is capped at 1 hour.
 
-Both the Cloudflare and Loki clients automatically retry on transient failures (HTTP 429, 502, 503, 504) with exponential backoff up to 3 retries. The `Retry-After` header is honored when present. If a query returns the maximum number of results (10,000 firewall events or 5,000 HTTP groups), a warning is logged indicating potential truncation.
+Both the Cloudflare and Loki clients automatically retry on transient failures (HTTP 429, 502, 503, 504) with exponential backoff up to 3 retries, through one shared retry policy. The `Retry-After` header is honored when present. If a query returns the maximum number of results (10,000 firewall events, or 5,000 HTTP or RUM groups), a warning is logged indicating potential truncation.
+
+A poll window is only committed - counted into Prometheus and its cursor advanced - after Loki has accepted every batch. If a push fails, the window is re-queried on the next poll and counted exactly once when that push succeeds.
 
 ## License
 

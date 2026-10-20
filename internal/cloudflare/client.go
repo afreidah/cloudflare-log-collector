@@ -5,10 +5,10 @@
 //
 // Core client for the Cloudflare APIs: connection config and the single
 // retrying HTTP executor that every query builds on. Rate limiting is handled
-// with exponential backoff that honors Retry-After, and the final HTTP status
-// is recorded on the active trace span. The per-dataset queries live in
-// firewall.go, http.go, rum.go (GraphQL) and audit.go (REST); the shared GraphQL
-// envelope and executor live in graphql.go.
+// by the shared retry policy (exponential backoff that honors Retry-After), and
+// the final HTTP status is recorded on the active trace span. The per-dataset
+// queries live in firewall.go, http.go, rum.go (GraphQL) and audit.go (REST);
+// the shared dataset query and GraphQL transport live in graphql.go.
 // -------------------------------------------------------------------------------
 
 // Package cloudflare is a client for the Cloudflare GraphQL Analytics and REST
@@ -19,7 +19,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -57,6 +56,7 @@ type Client struct {
 	endpoint      string
 	auditEndpoint string
 	httpClient    httpDoer
+	retryPolicy   retry.Policy
 }
 
 // NewClient creates a Cloudflare API client.
@@ -68,6 +68,7 @@ func NewClient(apiToken string) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		retryPolicy: retry.Default,
 	}
 }
 
@@ -78,6 +79,7 @@ func NewTestClient(endpoint, apiToken string) *Client {
 		endpoint:      endpoint,
 		auditEndpoint: endpoint + "/accounts/%s/logs/audit",
 		httpClient:    &http.Client{Timeout: 5 * time.Second},
+		retryPolicy:   retry.Default,
 	}
 }
 
@@ -85,52 +87,36 @@ func NewTestClient(endpoint, apiToken string) *Client {
 // HTTP TRANSPORT
 // -------------------------------------------------------------------------
 
-// doWithRetry sends the request produced by buildReq, retrying on retryable
-// status codes with exponential backoff that honors Retry-After. The request is
-// rebuilt for every attempt so no per-request state leaks across retries. The
-// final HTTP status code is recorded on the active span and returned alongside
-// the response body for the caller to interpret.
+// doWithRetry sends the request produced by buildReq under the client's retry
+// policy (see retry.Policy.Do). The request is rebuilt for every attempt so no
+// per-request state leaks across retries. The final HTTP status code is
+// recorded on the active span and returned alongside the response body for the
+// caller to interpret.
 func (c *Client) doWithRetry(ctx context.Context, buildReq func() (*http.Request, error)) ([]byte, int, error) {
-	var respBody []byte
-	var statusCode int
-
-	for attempt := range retry.MaxRetries + 1 {
+	res, err := c.retryPolicy.Do(ctx, "Cloudflare API", func() (retry.Result, error) {
 		req, err := buildReq()
 		if err != nil {
-			return nil, 0, fmt.Errorf("create request: %w", err)
+			return retry.Result{}, fmt.Errorf("create request: %w", err)
 		}
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			return nil, 0, fmt.Errorf("http request: %w", err)
+			return retry.Result{}, fmt.Errorf("http request: %w", err)
 		}
 
-		respBody, err = io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		_ = resp.Body.Close()
 		if err != nil {
-			return nil, 0, fmt.Errorf("read response: %w", err)
+			return retry.Result{}, fmt.Errorf("read response: %w", err)
 		}
 
-		statusCode = resp.StatusCode
-
-		if !retry.IsRetryable(statusCode) || attempt == retry.MaxRetries {
-			break
-		}
-
-		delay := retry.Delay(resp.Header, attempt)
-		slog.WarnContext(ctx, "Cloudflare API returned retryable status, backing off",
-			"status", statusCode, "attempt", attempt+1, "delay", delay)
-
-		retryTimer := time.NewTimer(delay)
-		select {
-		case <-retryTimer.C:
-		case <-ctx.Done():
-			retryTimer.Stop()
-			return nil, statusCode, ctx.Err()
-		}
+		return retry.Result{StatusCode: resp.StatusCode, Header: resp.Header, Body: body}, nil
+	})
+	if err != nil {
+		return nil, res.StatusCode, err
 	}
 
-	trace.SpanFromContext(ctx).SetAttributes(attribute.Int("http.status_code", statusCode))
+	trace.SpanFromContext(ctx).SetAttributes(attribute.Int("http.status_code", res.StatusCode))
 
-	return respBody, statusCode, nil
+	return res.Body, res.StatusCode, nil
 }
