@@ -3,291 +3,139 @@
 //
 // Author: Alex Freidah
 //
-// Tests for the HTTP traffic collector's metric update and Loki shipping logic.
-// Uses mock Cloudflare response data to verify cumulative Prometheus counter
-// population with country labels and structured JSON log entry generation for
-// Loki.
+// Covers what is the HTTP collector's own on top of the shared cursor-based
+// poll: how traffic groups map onto the request, origin, and bytes counters
+// (normalized host, cache status, request source, origin vs edge status), that
+// the counters accumulate across windows and count a window exactly once when
+// a failed push is retried, and its spec wiring.
 // -------------------------------------------------------------------------------
 
 package collector
 
 import (
 	"context"
-	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"testing"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
-	"github.com/afreidah/cloudflare-log-collector/internal/loki"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 )
 
-// httpTestConfig returns a ZoneCollectorConfig for HTTP collector tests with
-// the given Loki client and batch size.
-func httpTestConfig(lokiClient *loki.Client, batchSize int) ZoneCollectorConfig {
-	common := testCommon(lokiClient)
-	common.BatchSize = batchSize
-	return ZoneCollectorConfig{
-		CommonConfig: common,
-		ZoneID:       "zone1",
-		ZoneName:     "example.com",
-	}
+// httpGroup builds a traffic group; fields left zero stay zero.
+func httpGroup(count int, bytes int64, d cloudflare.HTTPRequestDimensions) cloudflare.HTTPRequestGroup {
+	return cloudflare.HTTPRequestGroup{Count: count, Dimensions: d, Sum: cloudflare.HTTPRequestSum{EdgeResponseBytes: bytes}}
+}
+
+// resetHTTPMetrics clears the process-global HTTP counters so a test asserts
+// absolute values.
+func resetHTTPMetrics() {
+	metrics.HTTPRequestsTotal.Reset()
+	metrics.HTTPOriginRequestsTotal.Reset()
+	metrics.HTTPBytesTotal.Reset()
 }
 
 // -------------------------------------------------------------------------
 // UPDATE METRICS
 // -------------------------------------------------------------------------
 
-func TestUpdateMetrics_CountryLabel(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(ts.Close)
+func TestUpdateMetrics_MapsDimensionsToLabels(t *testing.T) {
+	resetHTTPMetrics()
+	c := NewHTTPCollector(zoneTestConfig(&fakeCloudflare{}, &fakePusher{}))
 
-	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(httpTestConfig(lokiClient, 100))
+	c.updateMetrics([]cloudflare.HTTPRequestGroup{
+		// Same service under two spellings: case and port normalize away.
+		httpGroup(10, 1000, cloudflare.HTTPRequestDimensions{
+			ClientRequestHTTPHost: "G3.munchbox.cc:8080", ClientRequestHTTPMethodName: "GET", EdgeResponseStatus: 200,
+			OriginResponseStatus: 200, CacheStatus: "dynamic", RequestSource: "eyeball", ClientCountryName: "US",
+		}),
+		httpGroup(5, 500, cloudflare.HTTPRequestDimensions{
+			ClientRequestHTTPHost: "g3.munchbox.cc", ClientRequestHTTPMethodName: "GET", EdgeResponseStatus: 200,
+			OriginResponseStatus: 200, CacheStatus: "dynamic", RequestSource: "eyeball", ClientCountryName: "US",
+		}),
+		// Origin never answered: edge 504 with origin status 0.
+		httpGroup(3, 30, cloudflare.HTTPRequestDimensions{
+			ClientRequestHTTPHost: "s3-orchestrator.munchbox.cc", ClientRequestHTTPMethodName: "GET", EdgeResponseStatus: 504,
+			CacheStatus: "miss", RequestSource: "eyeball", ClientCountryName: "DE",
+		}),
+		// A Worker's own subrequest keeps its source.
+		httpGroup(7, 700, cloudflare.HTTPRequestDimensions{
+			ClientRequestHTTPHost: "s3.us-east-005.backblazeb2.com", ClientRequestHTTPMethodName: "PUT", EdgeResponseStatus: 200,
+			OriginResponseStatus: 200, CacheStatus: "dynamic", RequestSource: "edgeWorkerFetch", ClientCountryName: "US",
+		}),
+	})
 
-	// Counters are process-global; reset so this test asserts absolute values.
-	metrics.HTTPRequestsTotal.Reset()
-	metrics.HTTPBytesTotal.Reset()
-
-	groups := []cloudflare.HTTPRequestGroup{
-		{
-			Count: 10,
-			Dimensions: cloudflare.HTTPRequestDimensions{
-				Datetime:                    "2026-03-13T10:00:00Z",
-				ClientRequestHTTPMethodName: "GET",
-				EdgeResponseStatus:          200,
-				ClientCountryName:           "US",
-			},
-			Sum: cloudflare.HTTPRequestSum{EdgeResponseBytes: 1024},
-		},
-		{
-			Count: 5,
-			Dimensions: cloudflare.HTTPRequestDimensions{
-				Datetime:                    "2026-03-13T10:00:00Z",
-				ClientRequestHTTPMethodName: "POST",
-				EdgeResponseStatus:          201,
-				ClientCountryName:           "DE",
-			},
-			Sum: cloudflare.HTTPRequestSum{EdgeResponseBytes: 512},
-		},
-	}
-
-	c.updateMetrics(groups)
-
-	// --- Verify country label on HTTP requests counter ---
-	usCounter := metrics.HTTPRequestsTotal.WithLabelValues("GET", "200", "US", "example.com")
-	assertCounterValue(t, usCounter, 10)
-
-	deCounter := metrics.HTTPRequestsTotal.WithLabelValues("POST", "201", "DE", "example.com")
-	assertCounterValue(t, deCounter, 5)
-
-	// --- Verify edge bytes ---
-	edgeCounter := metrics.HTTPBytesTotal.WithLabelValues("edge", "example.com")
-	assertCounterValue(t, edgeCounter, 1536)
+	assertCounterValue(t, metrics.HTTPRequestsTotal.WithLabelValues("GET", "200", "US", "g3.munchbox.cc", "dynamic", "eyeball", "example.com"), 15)
+	assertCounterValue(t, metrics.HTTPOriginRequestsTotal.WithLabelValues("s3-orchestrator.munchbox.cc", "0", "504", "eyeball", "example.com"), 3)
+	assertCounterValue(t, metrics.HTTPRequestsTotal.WithLabelValues("PUT", "200", "US", "s3.us-east-005.backblazeb2.com", "dynamic", "edgeWorkerFetch", "example.com"), 7)
+	assertCounterValue(t, metrics.HTTPBytesTotal.WithLabelValues("edge", "g3.munchbox.cc", "eyeball", "example.com"), 1500)
+	assertCounterValue(t, metrics.HTTPBytesTotal.WithLabelValues("edge", "s3.us-east-005.backblazeb2.com", "edgeWorkerFetch", "example.com"), 700)
 }
 
-func TestUpdateMetrics_AccumulatesAcrossCalls(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(ts.Close)
-
-	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(httpTestConfig(lokiClient, 100))
-
-	metrics.HTTPRequestsTotal.Reset()
-	metrics.HTTPBytesTotal.Reset()
-
-	group := func(count int, bytes int64) cloudflare.HTTPRequestGroup {
-		return cloudflare.HTTPRequestGroup{
-			Count: count,
-			Dimensions: cloudflare.HTTPRequestDimensions{
-				ClientRequestHTTPMethodName: "GET",
-				EdgeResponseStatus:          200,
-				ClientCountryName:           "US",
-			},
-			Sum: cloudflare.HTTPRequestSum{EdgeResponseBytes: bytes},
-		}
+func TestUpdateMetrics_AccumulatesAcrossWindows(t *testing.T) {
+	resetHTTPMetrics()
+	c := NewHTTPCollector(zoneTestConfig(&fakeCloudflare{}, &fakePusher{}))
+	d := cloudflare.HTTPRequestDimensions{
+		ClientRequestHTTPHost: "example.com", ClientRequestHTTPMethodName: "GET", EdgeResponseStatus: 200,
+		OriginResponseStatus: 200, CacheStatus: "hit", RequestSource: "eyeball", ClientCountryName: "US",
 	}
 
-	// --- First poll window ---
-	c.updateMetrics([]cloudflare.HTTPRequestGroup{group(100, 5000)})
+	c.updateMetrics([]cloudflare.HTTPRequestGroup{httpGroup(100, 5000, d)})
+	c.updateMetrics([]cloudflare.HTTPRequestGroup{httpGroup(3, 100, d)})
 
-	reqCounter := metrics.HTTPRequestsTotal.WithLabelValues("GET", "200", "US", "example.com")
-	edgeCounter := metrics.HTTPBytesTotal.WithLabelValues("edge", "example.com")
-	assertCounterValue(t, reqCounter, 100)
-	assertCounterValue(t, edgeCounter, 5000)
-
-	// --- Second poll window accumulates onto the first (windows never overlap) ---
-	c.updateMetrics([]cloudflare.HTTPRequestGroup{group(3, 100)})
-
-	assertCounterValue(t, reqCounter, 103)
-	assertCounterValue(t, edgeCounter, 5100)
+	assertCounterValue(t, metrics.HTTPRequestsTotal.WithLabelValues("GET", "200", "US", "example.com", "hit", "eyeball", "example.com"), 103)
+	assertCounterValue(t, metrics.HTTPBytesTotal.WithLabelValues("edge", "example.com", "eyeball", "example.com"), 5100)
 }
 
 // -------------------------------------------------------------------------
-// SHIP TO LOKI
+// POLL
 // -------------------------------------------------------------------------
 
-func TestShipToLoki_SendsJSONEntries(t *testing.T) {
-	var received [][]byte
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		received = append(received, body)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(ts.Close)
+func TestHTTPPoll_Wiring(t *testing.T) {
+	cf := &fakeCloudflare{httpGroups: []cloudflare.HTTPRequestGroup{
+		httpGroup(1, 10, cloudflare.HTTPRequestDimensions{ClientRequestHTTPHost: "example.com", RequestSource: "eyeball"}),
+	}}
+	push := &fakePusher{}
+	c := NewHTTPCollector(zoneTestConfig(cf, push))
+	since := c.lastSeen
 
-	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(httpTestConfig(lokiClient, 100))
+	c.poll(context.Background())
 
-	groups := []cloudflare.HTTPRequestGroup{
-		{
-			Count: 42,
-			Dimensions: cloudflare.HTTPRequestDimensions{
-				Datetime:                    "2026-03-13T10:00:00Z",
-				ClientRequestHTTPMethodName: "GET",
-				EdgeResponseStatus:          200,
-				ClientCountryName:           "US",
-			},
-			Sum: cloudflare.HTTPRequestSum{EdgeResponseBytes: 1024},
-		},
+	if len(cf.httpCalls) != 1 || cf.httpCalls[0].scopeID != "zone1" || !cf.httpCalls[0].since.Equal(since) {
+		t.Fatalf("http calls = %+v, want one for zone1 from the cursor %v", cf.httpCalls, since)
 	}
-
-	err := shipThenCommit(context.Background(), &c.base, groups, nil)
-	if err != nil {
-		t.Fatalf("shipThenCommit() error = %v", err)
+	if !c.lastSeen.Equal(cf.httpCalls[0].until) {
+		t.Errorf("cursor = %v, want the window end %v", c.lastSeen, cf.httpCalls[0].until)
 	}
-
-	if len(received) != 1 {
-		t.Fatalf("got %d requests, want 1", len(received))
-	}
-
-	// --- Verify the push request structure ---
-	var pushReq struct {
-		Streams []struct {
-			Stream map[string]string `json:"stream"`
-			Values [][]string        `json:"values"`
-		} `json:"streams"`
-	}
-	if err := json.Unmarshal(received[0], &pushReq); err != nil {
-		t.Fatalf("unmarshal push request: %v", err)
-	}
-
-	if len(pushReq.Streams) != 1 {
-		t.Fatalf("got %d streams, want 1", len(pushReq.Streams))
-	}
-
-	stream := pushReq.Streams[0]
-	if stream.Stream["type"] != "http_traffic" {
-		t.Errorf("stream type = %q, want %q", stream.Stream["type"], "http_traffic")
-	}
-	if stream.Stream["job"] != "cloudflare" {
-		t.Errorf("stream job = %q, want %q", stream.Stream["job"], "cloudflare")
-	}
-	if stream.Stream["zone"] != "example.com" {
-		t.Errorf("stream zone = %q, want %q", stream.Stream["zone"], "example.com")
-	}
-
-	if len(stream.Values) != 1 {
-		t.Fatalf("got %d values, want 1", len(stream.Values))
-	}
-
-	// --- Verify the log line contains the group data ---
-	var group cloudflare.HTTPRequestGroup
-	if err := json.Unmarshal([]byte(stream.Values[0][1]), &group); err != nil {
-		t.Fatalf("unmarshal log line: %v", err)
-	}
-	if group.Count != 42 {
-		t.Errorf("count = %d, want 42", group.Count)
-	}
-	if group.Dimensions.ClientCountryName != "US" {
-		t.Errorf("country = %q, want %q", group.Dimensions.ClientCountryName, "US")
+	if got := decodeLine[cloudflare.HTTPRequestGroup](t, push.entries[0][0].Line); got.Dimensions.ClientRequestHTTPHost != "example.com" {
+		t.Errorf("shipped group = %+v, want the HTTP group", got)
 	}
 }
 
-func TestShipToLoki_Batching(t *testing.T) {
-	var requestCount int
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(ts.Close)
-
-	lokiClient := loki.NewClient(ts.URL, "fake")
-
-	// --- Batch size of 2 with 5 groups should produce 3 requests ---
-	c := NewHTTPCollector(httpTestConfig(lokiClient, 2))
-
-	groups := make([]cloudflare.HTTPRequestGroup, 5)
-	for i := range groups {
-		groups[i] = cloudflare.HTTPRequestGroup{
-			Count: 1,
-			Dimensions: cloudflare.HTTPRequestDimensions{
-				Datetime:                    "2026-03-13T10:00:00Z",
-				ClientRequestHTTPMethodName: "GET",
-				EdgeResponseStatus:          200,
-				ClientCountryName:           "US",
-			},
-		}
+// TestHTTPPoll_LokiRecovers_CountsWindowOnce is the regression test for the
+// double count: a window whose push fails is re-queried on the next poll, and
+// its counts must land exactly once when that retry succeeds.
+func TestHTTPPoll_LokiRecovers_CountsWindowOnce(t *testing.T) {
+	resetHTTPMetrics()
+	d := cloudflare.HTTPRequestDimensions{
+		ClientRequestHTTPHost: "example.com", ClientRequestHTTPMethodName: "GET", EdgeResponseStatus: 200,
+		CacheStatus: "dynamic", RequestSource: "eyeball", ClientCountryName: "US",
 	}
+	cf := &fakeCloudflare{httpGroups: []cloudflare.HTTPRequestGroup{httpGroup(10, 5000, d)}}
+	push := &fakePusher{err: errors.New("loki down")}
+	c := NewHTTPCollector(zoneTestConfig(cf, push))
+	requests := metrics.HTTPRequestsTotal.WithLabelValues("GET", "200", "US", "example.com", "dynamic", "eyeball", "example.com")
 
-	err := shipThenCommit(context.Background(), &c.base, groups, nil)
-	if err != nil {
-		t.Fatalf("shipThenCommit() error = %v", err)
-	}
+	// First poll: Loki rejects the push, so nothing is counted.
+	c.poll(context.Background())
+	assertCounterValue(t, requests, 0)
 
-	if requestCount != 3 {
-		t.Errorf("got %d Loki requests, want 3 (batches of 2 from 5 entries)", requestCount)
-	}
-}
+	// Second poll: Loki is back and the same window comes round again.
+	push.err = nil
+	c.poll(context.Background())
 
-func TestShipToLoki_EmptyGroups(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("should not make HTTP request for empty groups")
-	}))
-	t.Cleanup(ts.Close)
-
-	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(httpTestConfig(lokiClient, 100))
-
-	err := shipThenCommit[cloudflare.HTTPRequestGroup](context.Background(), &c.base, nil, nil)
-	if err != nil {
-		t.Fatalf("shipThenCommit() with empty groups should not error, got: %v", err)
-	}
-}
-
-func TestShipToLoki_ServerError(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte("internal error"))
-	}))
-	t.Cleanup(ts.Close)
-
-	lokiClient := loki.NewClient(ts.URL, "fake")
-	c := NewHTTPCollector(httpTestConfig(lokiClient, 100))
-
-	groups := []cloudflare.HTTPRequestGroup{
-		{
-			Count: 1,
-			Dimensions: cloudflare.HTTPRequestDimensions{
-				Datetime:                    "2026-03-13T10:00:00Z",
-				ClientRequestHTTPMethodName: "GET",
-				EdgeResponseStatus:          200,
-				ClientCountryName:           "US",
-			},
-		},
-	}
-
-	err := shipThenCommit(context.Background(), &c.base, groups, nil)
-	if err == nil {
-		t.Error("expected error for Loki HTTP 500")
+	assertCounterValue(t, requests, 10)
+	assertCounterValue(t, metrics.HTTPBytesTotal.WithLabelValues("edge", "example.com", "eyeball", "example.com"), 5000)
+	if len(cf.httpCalls) != 2 {
+		t.Errorf("http querier called %d times, want 2", len(cf.httpCalls))
 	}
 }

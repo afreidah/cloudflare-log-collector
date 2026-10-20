@@ -58,9 +58,11 @@ Fields captured: `action`, `clientIP`, `clientRequestHTTPHost`, `clientRequestHT
 
 ### HTTP Traffic (`httpRequestsAdaptiveGroups`)
 
-Aggregated HTTP traffic statistics grouped by method, status code, and country. Pushed to both Prometheus (cumulative counters) and Loki (structured JSON under `{job="cloudflare", type="http_traffic", zone="example.com"}`).
+Aggregated HTTP traffic statistics grouped per minute by host, method, edge and origin status, cache status, request source, and country. Pushed to both Prometheus (cumulative counters) and Loki (structured JSON under `{job="cloudflare", type="http_traffic", zone="example.com"}`).
 
-Fields captured: `count`, `datetime`, `clientRequestHTTPMethodName`, `edgeResponseStatus`, `clientCountryName`, `edgeResponseBytes`.
+Fields captured: `count`, `datetimeMinute`, `clientRequestHTTPHost`, `clientRequestHTTPMethodName`, `edgeResponseStatus`, `originResponseStatus`, `cacheStatus`, `requestSource`, `clientCountryName`, `edgeResponseBytes`.
+
+Every service sharing a zone gets its own `host` series (lowercased, port stripped). `source` is Cloudflare's request source: `eyeball` for real clients, other values (e.g. `edgeWorkerFetch`) for Cloudflare-internal traffic such as a Worker's own subrequests, which would otherwise count a proxied request twice - filter client traffic with `source="eyeball"`. `origin_status="0"` means no origin answered; together with a 5xx edge `status` it marks an unreachable origin.
 
 ### RUM / Web Analytics (`rumPageloadEventsAdaptiveGroups`, `rumWebVitalsEventsAdaptiveGroups`)
 
@@ -89,8 +91,9 @@ Exposed on the configured metrics listen address (default `:9101`).
 | `cflog_last_poll_timestamp` | gauge | `dataset`, `zone` | Unix timestamp of last successful poll |
 | `cflog_firewall_events_total` | counter | `action`, `zone` | Firewall events by action type |
 | `cflog_audit_events_total` | counter | `action`, `account` | Audit log events by action type |
-| `cflog_http_requests_total` | counter | `method`, `status`, `country`, `zone` | Cumulative HTTP requests |
-| `cflog_http_bytes_total` | counter | `type`, `zone` | Cumulative edge response bytes |
+| `cflog_http_requests_total` | counter | `method`, `status`, `country`, `host`, `cache_status`, `source`, `zone` | Cumulative HTTP requests |
+| `cflog_http_origin_requests_total` | counter | `host`, `origin_status`, `status`, `source`, `zone` | Cumulative HTTP requests by origin status and edge status |
+| `cflog_http_bytes_total` | counter | `type`, `host`, `source`, `zone` | Cumulative edge response bytes |
 | `cflog_rum_pageviews_total` | counter | `country`, `device`, `site` | RUM page views |
 | `cflog_rum_sessions_total` | counter | `country`, `device`, `site` | RUM sessions (entry page loads) |
 | `cflog_rum_web_vital_seconds` | gauge | `vital`, `device`, `site` | Core Web Vitals p75 in seconds (lcp, inp, fid, fcp, ttfb) |
@@ -98,6 +101,8 @@ Exposed on the configured metrics listen address (default `:9101`).
 | `cflog_loki_push_total` | counter | `status` | Loki push attempts by outcome |
 | `cflog_loki_push_duration_seconds` | histogram | | Loki push latency |
 | `cflog_build_info` | gauge | `version`, `go_version` | Build metadata |
+
+**Cardinality.** The HTTP series grow with the number of distinct label combinations a zone actually sees, not the product of every possible value. Measured over 24 hours on two Pro zones (3 and 13 hosts), `cflog_http_requests_total` produced 117 and 226 series, and `cflog_http_origin_requests_total` well under that. High-cardinality request detail (path, query, client IP, user agent) stays in Loki and never becomes a label.
 
 ## Loki Streams
 

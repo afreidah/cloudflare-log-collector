@@ -39,17 +39,43 @@ func testBase(interval time.Duration) base {
 // IDENTITY
 // -------------------------------------------------------------------------
 
-func TestNewBase_StreamLabels(t *testing.T) {
-	b := testBase(time.Minute)
+// TestCollectors_IdentityAndCursorStart checks what each collector's
+// constructor hands its base - the Loki stream labels (HTTP ships as
+// "http_traffic", not its dataset name) - and that every cursor starts one
+// backfill window back.
+func TestCollectors_IdentityAndCursorStart(t *testing.T) {
+	push := &fakePusher{}
+	firewall := NewFirewallCollector(zoneTestConfig(&fakeCloudflare{}, push))
+	httpc := NewHTTPCollector(zoneTestConfig(&fakeCloudflare{}, push))
+	audit := NewAuditCollector(auditTestConfig(&fakeCloudflare{}, push))
+	rum := NewRUMCollector(rumTestConfig(&fakeRUMQuerier{}, push))
 
-	want := map[string]string{"job": "cloudflare", "type": "test_stream", "zone": "example.com"}
-	if len(b.labels) != len(want) {
-		t.Fatalf("labels = %v, want %v", b.labels, want)
+	tests := []struct {
+		name   string
+		labels map[string]string
+		cursor time.Time
+	}{
+		{"firewall", map[string]string{"job": "cloudflare", "type": "firewall", "zone": "example.com"}, firewall.lastSeen},
+		{"http", map[string]string{"job": "cloudflare", "type": "http_traffic", "zone": "example.com"}, httpc.lastSeen},
+		{"audit", map[string]string{"job": "cloudflare", "type": "audit", "account": "acme"}, audit.lastSeen},
+		{"rum", map[string]string{"job": "cloudflare", "type": "rum_pageload", "site": "example.com"}, rum.pageloadSeen},
 	}
-	for k, v := range want {
-		if b.labels[k] != v {
-			t.Errorf("labels[%q] = %q, want %q", k, b.labels[k], v)
-		}
+	got := map[string]map[string]string{"firewall": firewall.labels, "http": httpc.labels, "audit": audit.labels, "rum": rum.labels}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if len(got[tt.name]) != len(tt.labels) {
+				t.Fatalf("labels = %v, want %v", got[tt.name], tt.labels)
+			}
+			for k, v := range tt.labels {
+				if got[tt.name][k] != v {
+					t.Errorf("labels[%q] = %q, want %q", k, got[tt.name][k], v)
+				}
+			}
+			if age := time.Since(tt.cursor); age < time.Hour-time.Minute || age > time.Hour+time.Minute {
+				t.Errorf("cursor starts %v back, want one backfill window (1h)", age)
+			}
+		})
 	}
 }
 
@@ -62,6 +88,33 @@ func TestBase_CursorStartIsOneBackfillWindowAgo(t *testing.T) {
 
 	if got.Before(before) || got.After(after) {
 		t.Errorf("cursorStart() = %v, want between %v and %v", got, before, after)
+	}
+}
+
+// TestCollectors_RunPollsThenStops checks that each collector's Run hands its
+// own poll to the shared loop: with the context already cancelled, Run polls
+// once and returns cleanly.
+func TestCollectors_RunPollsThenStops(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	push := &fakePusher{}
+
+	zone, audit, rum := &fakeCloudflare{}, &fakeCloudflare{}, &fakeRUMQuerier{}
+	runs := map[string]func(context.Context) error{
+		"firewall": NewFirewallCollector(zoneTestConfig(zone, push)).Run,
+		"http":     NewHTTPCollector(zoneTestConfig(zone, push)).Run,
+		"audit":    NewAuditCollector(auditTestConfig(audit, push)).Run,
+		"rum":      NewRUMCollector(rumTestConfig(rum, push)).Run,
+	}
+	for name, run := range runs {
+		if err := run(ctx); err != nil {
+			t.Errorf("%s: Run() error = %v, want nil on cancel", name, err)
+		}
+	}
+
+	if len(zone.firewallCalls) != 1 || len(zone.httpCalls) != 1 || len(audit.auditCalls) != 1 || len(rum.pageloadCalls) != 1 {
+		t.Errorf("each collector should poll once: firewall=%d http=%d audit=%d rum=%d",
+			len(zone.firewallCalls), len(zone.httpCalls), len(audit.auditCalls), len(rum.pageloadCalls))
 	}
 }
 

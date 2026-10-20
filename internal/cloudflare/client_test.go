@@ -4,9 +4,9 @@
 // Authors: Alex Freidah, Aaron Florey
 //
 // Tests for the Cloudflare API client using httptest servers to mock API
-// responses. Covers successful queries, the variables each dataset query sends,
-// error handling, and response parsing for the firewall and HTTP datasets and
-// the audit logs REST API.
+// responses: the audit logs REST API (results, pagination, errors), the
+// GraphQL transport's error handling, and retries under the client's retry
+// policy. Every Analytics dataset query is covered in graphql_test.go.
 // -------------------------------------------------------------------------------
 
 package cloudflare
@@ -15,7 +15,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,120 +23,6 @@ import (
 
 	"github.com/afreidah/cloudflare-log-collector/internal/retry"
 )
-
-// -------------------------------------------------------------------------
-// FIREWALL EVENTS
-// -------------------------------------------------------------------------
-
-func TestQueryFirewallEvents_Success(t *testing.T) {
-	var gotVars map[string]any
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		verifyAuthHeader(t, r)
-		verifyContentType(t, r)
-		gotVars = decodeQueryVariables(t, r)
-
-		writeJSON(t, w, datasetResponse("zones", "firewallEventsAdaptive", []FirewallEvent{
-			{
-				Action:   "block",
-				ClientIP: "1.2.3.4",
-				Datetime: "2026-03-13T10:00:00Z",
-				RayName:  "abc123",
-			},
-		}))
-	}))
-	t.Cleanup(ts.Close)
-
-	client := newTestClient(ts.URL, "test-token")
-
-	events, err := client.QueryFirewallEvents(context.Background(), "test-zone",
-		time.Now().Add(-1*time.Hour), time.Now())
-	if err != nil {
-		t.Fatalf("QueryFirewallEvents() error = %v", err)
-	}
-
-	if len(events) != 1 {
-		t.Fatalf("got %d events, want 1", len(events))
-	}
-	if events[0].Action != "block" {
-		t.Errorf("action = %q, want %q", events[0].Action, "block")
-	}
-	if events[0].ClientIP != "1.2.3.4" {
-		t.Errorf("clientIP = %q, want %q", events[0].ClientIP, "1.2.3.4")
-	}
-
-	// --- The zone, window, and the dataset's limit are sent as variables ---
-	if gotVars["zoneId"] != "test-zone" {
-		t.Errorf("zoneId variable = %v, want test-zone", gotVars["zoneId"])
-	}
-	if gotVars["limit"] != float64(firewallDataset.limit) {
-		t.Errorf("limit variable = %v, want %d", gotVars["limit"], firewallDataset.limit)
-	}
-	if gotVars["since"] == nil || gotVars["until"] == nil {
-		t.Errorf("since/until variables missing: %v", gotVars)
-	}
-}
-
-func TestQueryFirewallEvents_EmptyZones(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, map[string]any{"data": map[string]any{"viewer": map[string]any{"zones": []any{}}}})
-	}))
-	t.Cleanup(ts.Close)
-
-	client := newTestClient(ts.URL, "test-token")
-
-	events, err := client.QueryFirewallEvents(context.Background(), "test-zone",
-		time.Now().Add(-1*time.Hour), time.Now())
-	if err != nil {
-		t.Fatalf("QueryFirewallEvents() error = %v", err)
-	}
-
-	if events != nil {
-		t.Errorf("expected nil events for empty zones, got %d", len(events))
-	}
-}
-
-// -------------------------------------------------------------------------
-// HTTP REQUESTS
-// -------------------------------------------------------------------------
-
-func TestQueryHTTPRequests_Success(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		verifyAuthHeader(t, r)
-
-		writeJSON(t, w, datasetResponse("zones", "httpRequestsAdaptiveGroups", []HTTPRequestGroup{
-			{
-				Count: 42,
-				Dimensions: HTTPRequestDimensions{
-					Datetime:                    "2026-03-13T10:00:00Z",
-					ClientRequestHTTPMethodName: "GET",
-					EdgeResponseStatus:          200,
-				},
-				Sum: HTTPRequestSum{
-					EdgeResponseBytes: 1024,
-				},
-			},
-		}))
-	}))
-	t.Cleanup(ts.Close)
-
-	client := newTestClient(ts.URL, "test-token")
-
-	groups, err := client.QueryHTTPRequests(context.Background(), "test-zone",
-		time.Now().Add(-1*time.Hour), time.Now())
-	if err != nil {
-		t.Fatalf("QueryHTTPRequests() error = %v", err)
-	}
-
-	if len(groups) != 1 {
-		t.Fatalf("got %d groups, want 1", len(groups))
-	}
-	if groups[0].Count != 42 {
-		t.Errorf("count = %d, want 42", groups[0].Count)
-	}
-	if groups[0].Sum.EdgeResponseBytes != 1024 {
-		t.Errorf("edgeResponseBytes = %d, want 1024", groups[0].Sum.EdgeResponseBytes)
-	}
-}
 
 // -------------------------------------------------------------------------
 // AUDIT LOGS
@@ -366,113 +251,6 @@ func TestDoQuery_ServerDown(t *testing.T) {
 		time.Now().Add(-1*time.Hour), time.Now())
 	if err == nil {
 		t.Error("expected error when server is unreachable")
-	}
-}
-
-func TestDoQuery_RequestBody(t *testing.T) {
-	var receivedBody []byte
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var err error
-		receivedBody, err = io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		writeJSON(t, w, datasetResponse("zones", "firewallEventsAdaptive", []FirewallEvent{}))
-	}))
-	t.Cleanup(ts.Close)
-
-	client := newTestClient(ts.URL, "test-token")
-
-	_, _ = client.QueryFirewallEvents(context.Background(), "my-zone",
-		time.Date(2026, 3, 13, 10, 0, 0, 0, time.UTC),
-		time.Date(2026, 3, 13, 11, 0, 0, 0, time.UTC))
-
-	var req graphQLRequest
-	if err := json.Unmarshal(receivedBody, &req); err != nil {
-		t.Fatalf("unmarshal request body: %v", err)
-	}
-
-	if req.Variables["zoneId"] != "my-zone" {
-		t.Errorf("zoneId = %q, want %q", req.Variables["zoneId"], "my-zone")
-	}
-	if req.Variables["since"] != "2026-03-13T10:00:00Z" {
-		t.Errorf("since = %q, want %q", req.Variables["since"], "2026-03-13T10:00:00Z")
-	}
-}
-
-// -------------------------------------------------------------------------
-// TRUNCATION WARNINGS
-// -------------------------------------------------------------------------
-
-func TestQueryHTTPRequests_TruncationWarning(t *testing.T) {
-	// Build a response with exactly a full page of groups
-	groups := make([]HTTPRequestGroup, httpDataset.limit)
-	for i := range groups {
-		groups[i] = HTTPRequestGroup{
-			Count: 1,
-			Dimensions: HTTPRequestDimensions{
-				Datetime:                    "2026-03-13T10:00:00Z",
-				ClientRequestHTTPMethodName: "GET",
-				EdgeResponseStatus:          200,
-			},
-		}
-	}
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, datasetResponse("zones", "httpRequestsAdaptiveGroups", groups))
-	}))
-	t.Cleanup(ts.Close)
-
-	client := NewTestClient(ts.URL, "test-token")
-
-	result, err := client.QueryHTTPRequests(context.Background(), "test-zone",
-		time.Now().Add(-1*time.Hour), time.Now())
-	if err != nil {
-		t.Fatalf("QueryHTTPRequests() error = %v", err)
-	}
-
-	// A full page is still returned in full; the warning only flags it.
-	if len(result) != httpDataset.limit {
-		t.Errorf("got %d groups, want %d", len(result), httpDataset.limit)
-	}
-}
-
-// -------------------------------------------------------------------------
-// DATASET QUERIES
-// -------------------------------------------------------------------------
-
-func TestQueryDataset_MissingFieldReturnsNoRows(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// A zone node with no dataset field (e.g. the dataset is not enabled).
-		writeJSON(t, w, map[string]any{"data": map[string]any{"viewer": map[string]any{"zones": []any{map[string]any{}}}}})
-	}))
-	t.Cleanup(ts.Close)
-
-	client := newTestClient(ts.URL, "test-token")
-
-	events, err := client.QueryFirewallEvents(context.Background(), "test-zone",
-		time.Now().Add(-1*time.Hour), time.Now())
-	if err != nil {
-		t.Fatalf("QueryFirewallEvents() error = %v", err)
-	}
-	if len(events) != 0 {
-		t.Errorf("got %d events, want 0 when the dataset field is absent", len(events))
-	}
-}
-
-func TestQueryDataset_MalformedRowsIsAnError(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, datasetResponse("zones", "firewallEventsAdaptive", "not-a-list"))
-	}))
-	t.Cleanup(ts.Close)
-
-	client := newTestClient(ts.URL, "test-token")
-
-	_, err := client.QueryFirewallEvents(context.Background(), "test-zone",
-		time.Now().Add(-1*time.Hour), time.Now())
-	if err == nil || !contains(err.Error(), "firewallEventsAdaptive response parse") {
-		t.Errorf("err = %v, want a firewallEventsAdaptive response parse error", err)
 	}
 }
 

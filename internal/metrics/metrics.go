@@ -53,21 +53,38 @@ var FirewallEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help: "Cloudflare firewall events by action",
 }, []string{"action", "zone"})
 
-// HTTPRequestsTotal counts HTTP requests by method, status, country, and zone.
-// It is cumulative: each non-overlapping poll window adds its counts, so the
-// value is immune to poll-window length (backfill, missed polls) and dashboards
-// apply rate()/increase() rather than reading a per-window snapshot.
+// The HTTP metrics are cumulative: each non-overlapping poll window adds its
+// counts, so the values are immune to poll-window length (backfill, missed
+// polls) and dashboards apply rate()/increase() rather than reading a
+// per-window snapshot. host is the normalized request hostname, so services
+// sharing a zone get their own series. source is Cloudflare's request source:
+// "eyeball" for real clients, other values for Cloudflare-internal traffic
+// such as a Worker's own subrequests, which would otherwise count a proxied
+// request twice - client-traffic queries filter on source="eyeball".
+
+// HTTPRequestsTotal counts HTTP requests by method, edge status, country, host,
+// cache status, request source, and zone.
 var HTTPRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "cflog_http_requests_total",
-	Help: "Total HTTP requests observed via Cloudflare analytics by method, status, country, and zone",
-}, []string{"method", "status", "country", "zone"})
+	Help: "Total HTTP requests observed via Cloudflare analytics by method, status, country, host, cache status, source, and zone",
+}, []string{"method", "status", "country", "host", "cache_status", "source", "zone"})
 
-// HTTPBytesTotal counts HTTP response bytes by type and zone, cumulative across
-// poll windows like HTTPRequestsTotal.
+// HTTPOriginRequestsTotal counts HTTP requests by origin status alongside the
+// edge status. origin_status is what the origin returned to Cloudflare, or "0"
+// when no origin answered; the edge status tells those apart - a cache hit or
+// edge redirect has a 2xx/3xx edge status, while origin_status="0" with a 5xx
+// edge status means the origin was unreachable.
+var HTTPOriginRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "cflog_http_origin_requests_total",
+	Help: "Total HTTP requests observed via Cloudflare analytics by host, origin status, edge status, source, and zone",
+}, []string{"host", "origin_status", "status", "source", "zone"})
+
+// HTTPBytesTotal counts HTTP response bytes by type, host, request source, and
+// zone.
 var HTTPBytesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "cflog_http_bytes_total",
-	Help: "Total HTTP response bytes observed via Cloudflare analytics by type and zone",
-}, []string{"type", "zone"})
+	Help: "Total HTTP response bytes observed via Cloudflare analytics by type, host, source, and zone",
+}, []string{"type", "host", "source", "zone"})
 
 // AuditEventsTotal counts audit log events by action type and account.
 var AuditEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
