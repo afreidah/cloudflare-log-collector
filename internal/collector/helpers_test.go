@@ -24,14 +24,15 @@ import (
 // -------------------------------------------------------------------------
 
 // testCommon returns the shared collector settings most tests use: a one-minute
-// poll interval, a one-hour backfill window, no ingestion lag, and batches of
-// 100, shipping to push. Tests that need other values adjust the returned
-// CommonConfig.
+// poll interval, a one-hour backfill window, no ingestion lag, a 15-minute
+// trailing window, and batches of 100, shipping to push. Tests that need other
+// values adjust the returned CommonConfig.
 func testCommon(push logPusher) CommonConfig {
 	return CommonConfig{
 		Loki:           push,
 		PollInterval:   time.Minute,
 		BackfillWindow: time.Hour,
+		TrailingWindow: 15 * time.Minute,
 		BatchSize:      100,
 	}
 }

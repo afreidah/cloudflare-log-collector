@@ -76,6 +76,26 @@ func datasetCases() []datasetCase {
 			},
 		},
 		{
+			name: "http origin latency",
+			info: httpOriginLatencyDataset.datasetInfo,
+			vars: map[string]any{"zoneId": "zone1"},
+			rows: []HTTPLatencyGroup[OriginLatencyQuantiles]{{Count: 40, Dimensions: HTTPLatencyDimensions{ClientRequestHTTPHost: "g3.munchbox.cc"},
+				Quantiles: OriginLatencyQuantiles{OriginResponseDurationMsP50: 14, OriginResponseDurationMsP95: 23, OriginResponseDurationMsP99: 26}}},
+			call: func(c *Client, since, until time.Time) (any, error) {
+				return c.QueryHTTPOriginLatency(ctx, "zone1", since, until)
+			},
+		},
+		{
+			name: "http edge latency",
+			info: httpEdgeLatencyDataset.datasetInfo,
+			vars: map[string]any{"zoneId": "zone1"},
+			rows: []HTTPLatencyGroup[EdgeLatencyQuantiles]{{Count: 157, Dimensions: HTTPLatencyDimensions{ClientRequestHTTPHost: "b2-proxy.munchbox.cc"},
+				Quantiles: EdgeLatencyQuantiles{EdgeTimeToFirstByteMsP50: 271, EdgeTimeToFirstByteMsP95: 882, EdgeTimeToFirstByteMsP99: 1769}}},
+			call: func(c *Client, since, until time.Time) (any, error) {
+				return c.QueryHTTPEdgeLatency(ctx, "zone1", since, until)
+			},
+		},
+		{
 			name: "rum pageloads",
 			info: rumPageloadDataset.datasetInfo,
 			vars: map[string]any{"accountId": "acct1", "siteTag": "site1"},

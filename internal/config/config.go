@@ -38,6 +38,9 @@ type Config struct {
 // each cursor-based poll's window end back from now, so Cloudflare has finished
 // ingesting a window before it is read and the cursor moves past it; it applies
 // to the firewall, HTTP, and audit datasets (Web Analytics has its own).
+// LatencyWindow is how far back the per-host HTTP latency quantiles reach:
+// short enough to show an incident while it happens, long enough to hold
+// enough requests per host for a stable p95.
 type CloudflareConfig struct {
 	APIToken       string             `yaml:"api_token"`
 	Zones          []ZoneConfig       `yaml:"zones"`
@@ -46,6 +49,7 @@ type CloudflareConfig struct {
 	PollInterval   time.Duration      `yaml:"poll_interval"`
 	BackfillWindow time.Duration      `yaml:"backfill_window"`
 	IngestionLag   time.Duration      `yaml:"ingestion_lag"`
+	LatencyWindow  time.Duration      `yaml:"latency_window"`
 }
 
 // ZoneConfig identifies a single Cloudflare zone to monitor.
@@ -70,12 +74,15 @@ type AccountConfig struct {
 // datasets are account-scoped, so all sites share one account_id and are
 // identified by their Web Analytics site tag. IngestionLag is the page-load
 // window's lag behind now; RUM data lands well after the zone datasets, so it
-// is set separately from cloudflare.ingestion_lag.
+// is set separately from cloudflare.ingestion_lag. VitalsWindow is how far
+// back the Core Web Vitals p75 reaches; page views are sparse, so it is wider
+// than the HTTP latency window.
 type WebAnalyticsConfig struct {
 	Enabled      bool          `yaml:"enabled"`
 	AccountID    string        `yaml:"account_id"`
 	Sites        []SiteConfig  `yaml:"sites"`
 	IngestionLag time.Duration `yaml:"ingestion_lag"`
+	VitalsWindow time.Duration `yaml:"vitals_window"`
 }
 
 // SiteConfig identifies a single Web Analytics site to collect RUM data from.
@@ -122,7 +129,7 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// --- Expand environment variables ---
+	// Expand environment variables.
 	expanded := os.Expand(string(data), os.Getenv)
 
 	var cfg Config
@@ -159,8 +166,14 @@ func (c *Config) applyDefaults() {
 	if c.Cloudflare.IngestionLag == 0 {
 		c.Cloudflare.IngestionLag = 3 * time.Minute
 	}
+	if c.Cloudflare.LatencyWindow == 0 {
+		c.Cloudflare.LatencyWindow = 15 * time.Minute
+	}
 	if c.Cloudflare.WebAnalytics.IngestionLag == 0 {
 		c.Cloudflare.WebAnalytics.IngestionLag = 10 * time.Minute
+	}
+	if c.Cloudflare.WebAnalytics.VitalsWindow == 0 {
+		c.Cloudflare.WebAnalytics.VitalsWindow = 1 * time.Hour
 	}
 	if c.Loki.TenantID == "" {
 		c.Loki.TenantID = "fake"
@@ -193,7 +206,7 @@ func (c *Config) validate() error {
 }
 
 // validateCloudflare checks the required Cloudflare fields, per-zone values,
-// and the zone datasets' ingestion lag.
+// and the zone datasets' ingestion lag and latency window.
 func (c *Config) validateCloudflare() []error {
 	var errs []error
 	if c.Cloudflare.APIToken == "" {
@@ -203,9 +216,10 @@ func (c *Config) validateCloudflare() []error {
 		errs = append(errs, fmt.Errorf("cloudflare.zones requires at least one zone"))
 	}
 	errs = append(errs, requireFields("cloudflare.zones", c.Cloudflare.Zones, func(z ZoneConfig) []requiredField {
-		return []requiredField{{"id", z.ID}, {"name", z.Name}}
+		return idAndName(z.ID, z.Name)
 	})...)
 	errs = append(errs, c.validateLag("cloudflare.ingestion_lag", c.Cloudflare.IngestionLag)...)
+	errs = append(errs, notNegative("cloudflare.latency_window", c.Cloudflare.LatencyWindow)...)
 	return errs
 }
 
@@ -219,13 +233,13 @@ func (c *Config) validateAuditLogs() []error {
 		errs = append(errs, fmt.Errorf("cloudflare.audit_logs.accounts requires at least one account when enabled"))
 	}
 	errs = append(errs, requireFields("cloudflare.audit_logs.accounts", c.Cloudflare.AuditLogs.Accounts, func(a AccountConfig) []requiredField {
-		return []requiredField{{"id", a.ID}, {"name", a.Name}}
+		return idAndName(a.ID, a.Name)
 	})...)
 	return errs
 }
 
-// validateWebAnalytics checks the Web Analytics sites and their ingestion lag
-// when collection is enabled.
+// validateWebAnalytics checks the Web Analytics sites, their ingestion lag,
+// and the vitals window when collection is enabled.
 func (c *Config) validateWebAnalytics() []error {
 	if !c.Cloudflare.WebAnalytics.Enabled {
 		return nil
@@ -241,6 +255,7 @@ func (c *Config) validateWebAnalytics() []error {
 		return []requiredField{{"site_tag", s.SiteTag}, {"name", s.Name}}
 	})...)
 	errs = append(errs, c.validateLag("cloudflare.web_analytics.ingestion_lag", c.Cloudflare.WebAnalytics.IngestionLag)...)
+	errs = append(errs, notNegative("cloudflare.web_analytics.vitals_window", c.Cloudflare.WebAnalytics.VitalsWindow)...)
 	return errs
 }
 
@@ -249,11 +264,20 @@ func (c *Config) validateWebAnalytics() []error {
 // one backfill window back, so a lag at least that long leaves the startup
 // backfill nothing to collect.
 func (c *Config) validateLag(path string, lag time.Duration) []error {
-	if lag < 0 {
-		return []error{fmt.Errorf("%s must not be negative", path)}
+	if errs := notNegative(path, lag); errs != nil {
+		return errs
 	}
 	if lag >= c.Cloudflare.BackfillWindow {
 		return []error{fmt.Errorf("%s (%s) must be less than cloudflare.backfill_window (%s)", path, lag, c.Cloudflare.BackfillWindow)}
+	}
+	return nil
+}
+
+// notNegative checks that the duration at the given config path is not
+// negative. Zero is never seen here: an unset duration has its default.
+func notNegative(path string, d time.Duration) []error {
+	if d < 0 {
+		return []error{fmt.Errorf("%s must not be negative", path)}
 	}
 	return nil
 }
@@ -267,6 +291,12 @@ func (c *Config) validateLag(path string, lag time.Duration) []error {
 type requiredField struct {
 	key   string
 	value string
+}
+
+// idAndName is the required fields of a list item identified by an ID and a
+// display name (zones and audit accounts).
+func idAndName(id, name string) []requiredField {
+	return []requiredField{{"id", id}, {"name", name}}
 }
 
 // requireFields reports every required field left empty across a config list,

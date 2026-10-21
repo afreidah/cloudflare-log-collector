@@ -51,7 +51,7 @@ func InitTracer(ctx context.Context, cfg config.TracingConfig) (func(context.Con
 		return func(context.Context) error { return nil }, nil
 	}
 
-	// --- Create OTLP exporter ---
+	// Create the OTLP exporter.
 	opts := []otlptracegrpc.Option{
 		otlptracegrpc.WithEndpoint(cfg.Endpoint),
 	}
@@ -63,7 +63,7 @@ func InitTracer(ctx context.Context, cfg config.TracingConfig) (func(context.Con
 		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
 	}
 
-	// --- Create resource with service info ---
+	// Create the resource with service info.
 	res, err := resource.Merge(
 		resource.Default(),
 		resource.NewSchemaless(
@@ -75,7 +75,7 @@ func InitTracer(ctx context.Context, cfg config.TracingConfig) (func(context.Con
 		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}
 
-	// --- Configure sampler ---
+	// Configure the sampler.
 	var sampler sdktrace.Sampler
 	switch {
 	case cfg.SampleRate >= 1.0:
@@ -86,7 +86,7 @@ func InitTracer(ctx context.Context, cfg config.TracingConfig) (func(context.Con
 		sampler = sdktrace.TraceIDRatioBased(cfg.SampleRate)
 	}
 
-	// --- Create trace provider ---
+	// Create the trace provider.
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(res),
@@ -116,9 +116,15 @@ func StartSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (c
 	return Tracer().Start(ctx, name, trace.WithAttributes(attrs...))
 }
 
-// StartClientSpan creates a span with SpanKindClient for outbound service calls.
-// Client spans are required for Tempo's service graph to detect service-to-service edges.
-func StartClientSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+// StartClientSpan creates a span with SpanKindClient for an outbound call to
+// peerService at serverAddress, plus any further attributes. Client spans
+// carrying peer.service are what Tempo's service graph uses to draw
+// service-to-service edges, so every outbound call names its peer here.
+func StartClientSpan(ctx context.Context, name, peerService, serverAddress string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	attrs = append([]attribute.KeyValue{
+		attribute.String("peer.service", peerService),
+		attribute.String("server.address", serverAddress),
+	}, attrs...)
 	return Tracer().Start(ctx, name,
 		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(attrs...),

@@ -3,11 +3,14 @@
 //
 // Author: Alex Freidah
 //
-// Tests for the cursor-based poll template on its own - lagged window,
-// closed-window skip, empty windows per cursor advancer, ship-then-commit,
-// failure paths, filtering - plus one end-to-end poll through the real
-// Cloudflare and Loki clients against httptest servers, proving the whole
-// chain is wired together. Each collector's own wiring is tested beside it.
+// Tests for the poll templates on their own. The cursor-based poll: lagged
+// window, closed-window skip, empty windows per cursor advancer,
+// ship-then-commit, failure paths, filtering. The trailing poll: a window
+// ending now, replacing only its own scope's series, keeping gauges on a
+// failed query, clearing them on an empty window. Plus one end-to-end poll
+// through the real Cloudflare and Loki clients against httptest servers,
+// proving the whole chain is wired together. Each collector's own wiring is
+// tested beside it.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -23,6 +26,9 @@ import (
 
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/loki"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // -------------------------------------------------------------------------
@@ -218,5 +224,106 @@ func TestPollCursor_FilterRunsBeforeShipAndCount(t *testing.T) {
 	}
 	if want := time.Date(2026, 10, 19, 11, 0, 0, 0, time.UTC); !tp.cursor.Equal(want) {
 		t.Errorf("cursor = %v, want the last kept row %v", tp.cursor, want)
+	}
+}
+
+// -------------------------------------------------------------------------
+// TRAILING POLL TEMPLATE
+// -------------------------------------------------------------------------
+
+// trailing is a pollTrailing fixture: a base with the given trailing window,
+// an unregistered gauge, and a spec over cursorRow whose query returns
+// rows/err and records the window it was asked for. set writes one series per
+// row, keyed by the row's timestamp.
+type trailing struct {
+	b            base
+	gauge        *prometheus.GaugeVec
+	rows         []cursorRow
+	err          error
+	since, until time.Time
+	setWith      []cursorRow
+}
+
+func newTrailing(window time.Duration) *trailing {
+	tr := &trailing{gauge: testGauge()}
+	common := testCommon(&fakePusher{})
+	common.TrailingWindow = window
+	tr.b = newBase(common, identity{name: "Test", stream: "test", scopeKey: "zone", scope: "example.com", record: "test row"})
+	return tr
+}
+
+func (tr *trailing) spec() trailingPoll[cursorRow] {
+	return trailingPoll[cursorRow]{
+		dataset:   DatasetHTTPOriginLatency,
+		span:      "test.trailing",
+		title:     "Test quantiles",
+		countAttr: "cflog.test_count",
+		query: func(_ context.Context, since, until time.Time) ([]cursorRow, error) {
+			tr.since, tr.until = since, until
+			return tr.rows, tr.err
+		},
+		gauges: []*prometheus.GaugeVec{tr.gauge},
+		set: func(rows []cursorRow) {
+			tr.setWith = rows
+			for _, r := range rows {
+				tr.b.set(tr.gauge, 1, r.At)
+			}
+		},
+	}
+}
+
+func TestPollTrailing_QueriesTheWindowEndingNow(t *testing.T) {
+	tr := newTrailing(15 * time.Minute)
+
+	before := time.Now().UTC()
+	pollTrailing(context.Background(), &tr.b, tr.spec())
+	after := time.Now().UTC()
+
+	if tr.until.Before(before) || tr.until.After(after) {
+		t.Errorf("until = %v, want now (no ingestion lag)", tr.until)
+	}
+	if got := tr.until.Sub(tr.since); got != 15*time.Minute {
+		t.Errorf("window = %v, want the trailing window 15m", got)
+	}
+}
+
+func TestPollTrailing_ReplacesThisScopesSeries(t *testing.T) {
+	tr := newTrailing(time.Hour)
+	tr.b.set(tr.gauge, 1, "stale")
+	tr.gauge.WithLabelValues("kept", "other.example").Set(2)
+	tr.rows = []cursorRow{{At: "fresh"}}
+
+	pollTrailing(context.Background(), &tr.b, tr.spec())
+
+	// The stale series is gone, the fresh one set, another scope untouched.
+	if got := testutil.CollectAndCount(tr.gauge); got != 2 {
+		t.Errorf("series = %d, want 2 (fresh + the other scope's)", got)
+	}
+	assertGaugeValue(t, tr.gauge.WithLabelValues("fresh", "example.com"), 1)
+	assertGaugeValue(t, tr.gauge.WithLabelValues("kept", "other.example"), 2)
+}
+
+func TestPollTrailing_QueryErrorKeepsGauges(t *testing.T) {
+	tr := newTrailing(time.Hour)
+	tr.b.set(tr.gauge, 1, "last")
+	tr.err = errors.New("boom")
+
+	pollTrailing(context.Background(), &tr.b, tr.spec())
+
+	if tr.setWith != nil {
+		t.Error("set must not run after a failed query")
+	}
+	assertGaugeValue(t, tr.gauge.WithLabelValues("last", "example.com"), 1)
+}
+
+func TestPollTrailing_EmptyWindowClearsGauges(t *testing.T) {
+	tr := newTrailing(time.Hour)
+	tr.b.set(tr.gauge, 1, "gone")
+
+	pollTrailing(context.Background(), &tr.b, tr.spec())
+
+	// A successful empty window means no data now, not the last value.
+	if got := testutil.CollectAndCount(tr.gauge); got != 0 {
+		t.Errorf("series = %d, want 0 after an empty window", got)
 	}
 }

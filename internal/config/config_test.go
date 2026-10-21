@@ -148,17 +148,24 @@ func TestDefaults_BackfillWindow(t *testing.T) {
 	}
 }
 
-func TestDefaults_IngestionLags(t *testing.T) {
+func TestDefaults_LagsAndWindows(t *testing.T) {
 	cfg := validConfig()
 	if err := cfg.setDefaultsAndValidate(); err != nil {
 		t.Fatalf("setDefaultsAndValidate() error = %v", err)
 	}
 
-	if cfg.Cloudflare.IngestionLag != 3*time.Minute {
-		t.Errorf("ingestion_lag = %v, want %v", cfg.Cloudflare.IngestionLag, 3*time.Minute)
-	}
-	if cfg.Cloudflare.WebAnalytics.IngestionLag != 10*time.Minute {
-		t.Errorf("web_analytics.ingestion_lag = %v, want %v", cfg.Cloudflare.WebAnalytics.IngestionLag, 10*time.Minute)
+	for _, tt := range []struct {
+		key       string
+		got, want time.Duration
+	}{
+		{"ingestion_lag", cfg.Cloudflare.IngestionLag, 3 * time.Minute},
+		{"latency_window", cfg.Cloudflare.LatencyWindow, 15 * time.Minute},
+		{"web_analytics.ingestion_lag", cfg.Cloudflare.WebAnalytics.IngestionLag, 10 * time.Minute},
+		{"web_analytics.vitals_window", cfg.Cloudflare.WebAnalytics.VitalsWindow, time.Hour},
+	} {
+		if tt.got != tt.want {
+			t.Errorf("%s = %v, want %v", tt.key, tt.got, tt.want)
+		}
 	}
 }
 
@@ -354,28 +361,34 @@ func TestValidation_WebAnalyticsOnlyIsValid(t *testing.T) {
 	}
 }
 
-func TestValidation_IngestionLag(t *testing.T) {
+func TestValidation_LagsAndWindows(t *testing.T) {
 	tests := []struct {
-		name    string
-		lag     time.Duration
-		rumLag  time.Duration
-		wantErr string
+		name          string
+		lag           time.Duration
+		rumLag        time.Duration
+		latencyWindow time.Duration
+		vitalsWindow  time.Duration
+		wantErr       string
 	}{
 		{name: "negative zone lag", lag: -time.Minute, wantErr: "cloudflare.ingestion_lag must not be negative"},
 		{name: "zone lag at backfill window", lag: time.Hour, wantErr: "cloudflare.ingestion_lag (1h0m0s) must be less than"},
 		{name: "rum lag past backfill window", rumLag: 2 * time.Hour, wantErr: "cloudflare.web_analytics.ingestion_lag (2h0m0s) must be less than"},
-		{name: "explicit lags inside the window", lag: 5 * time.Minute, rumLag: 15 * time.Minute},
+		{name: "negative latency window", latencyWindow: -time.Minute, wantErr: "cloudflare.latency_window must not be negative"},
+		{name: "negative vitals window", vitalsWindow: -time.Minute, wantErr: "cloudflare.web_analytics.vitals_window must not be negative"},
+		{name: "explicit values", lag: 5 * time.Minute, rumLag: 15 * time.Minute, latencyWindow: 5 * time.Minute, vitalsWindow: 6 * time.Hour},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := validConfig()
 			cfg.Cloudflare.IngestionLag = tt.lag
+			cfg.Cloudflare.LatencyWindow = tt.latencyWindow
 			cfg.Cloudflare.WebAnalytics = WebAnalyticsConfig{
 				Enabled:      true,
 				AccountID:    "acct1",
 				Sites:        []SiteConfig{{SiteTag: "s1", Name: "example.com"}},
 				IngestionLag: tt.rumLag,
+				VitalsWindow: tt.vitalsWindow,
 			}
 
 			err := cfg.setDefaultsAndValidate()
@@ -422,7 +435,7 @@ func TestValidation_MultipleErrors(t *testing.T) {
 		t.Fatal("validation should fail with multiple errors")
 	}
 
-	// --- Should report all missing required fields ---
+	// Every missing required field is reported.
 	errStr := err.Error()
 	if !strings.Contains(errStr, "api_token") || !strings.Contains(errStr, "zones") || !strings.Contains(errStr, "loki.endpoint") {
 		t.Errorf("error should mention all missing fields, got: %v", err)

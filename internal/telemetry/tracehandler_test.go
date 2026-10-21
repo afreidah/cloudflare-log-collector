@@ -30,7 +30,7 @@ func TestTraceHandler_InjectsTraceID(t *testing.T) {
 	handler := NewTraceHandler(inner)
 	logger := slog.New(handler)
 
-	// --- Create a fake span context ---
+	// Create a fake span context.
 	traceID, _ := trace.TraceIDFromHex("0102030405060708090a0b0c0d0e0f10")
 	spanID, _ := trace.SpanIDFromHex("0102030405060708")
 	sc := trace.NewSpanContext(trace.SpanContextConfig{

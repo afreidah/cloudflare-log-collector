@@ -4,8 +4,8 @@
 // Authors: Alex Freidah, Aaron Florey
 //
 // The GraphQL transport every Analytics dataset query runs on (see dataset.go
-// for how those queries are built). doQuery posts a query, records failures on
-// the active span, and returns the response's data field.
+// for how those queries are built). doQuery posts a query within a client
+// span, records failures on it, and returns the response's data field.
 // -------------------------------------------------------------------------------
 
 package cloudflare
@@ -31,59 +31,53 @@ type graphQLRequest struct {
 // graphQLResponse is the top-level envelope returned by the Cloudflare GraphQL API.
 type graphQLResponse struct {
 	Data   json.RawMessage `json:"data"`
-	Errors []struct {
-		Message string `json:"message"`
-	} `json:"errors"`
+	Errors apiErrors       `json:"errors"`
 }
 
-// doQuery sends a GraphQL request and returns the data field from the response.
-// The scope argument (a zone or site tag) is recorded on the span only.
+// doQuery sends a GraphQL request within a client span and returns the data
+// field from the response; any failure marks the span failed. The scope
+// argument (a zone or site tag) is recorded on the span only.
 func (c *Client) doQuery(ctx context.Context, scope, query string, variables map[string]any) (json.RawMessage, error) {
-	ctx, span := telemetry.StartClientSpan(ctx, "cloudflare.graphql",
-		attribute.String("peer.service", "cloudflare-api"),
-		attribute.String("server.address", "api.cloudflare.com"),
+	ctx, span := startAPISpan(ctx, "cloudflare.graphql",
 		attribute.String("cflog.scope", scope),
 		attribute.String("cflog.since", fmt.Sprint(variables["since"])),
 		attribute.String("cflog.until", fmt.Sprint(variables["until"])),
 	)
 	defer span.End()
 
-	payload, err := json.Marshal(graphQLRequest{Query: query, Variables: variables})
+	data, err := c.postQuery(ctx, query, variables)
 	if err != nil {
 		telemetry.FailSpan(span, err)
+	}
+	return data, err
+}
+
+// postQuery posts one GraphQL request and returns its data field, turning a
+// GraphQL-level error in the response into an error.
+func (c *Client) postQuery(ctx context.Context, query string, variables map[string]any) (json.RawMessage, error) {
+	payload, err := json.Marshal(graphQLRequest{Query: query, Variables: variables})
+	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	respBody, statusCode, err := c.doWithRetry(ctx, func() (*http.Request, error) {
+	respBody, err := c.doWithRetry(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
 		if err != nil {
 			return nil, err
 		}
-
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+c.apiToken)
 		return req, nil
 	})
 	if err != nil {
-		telemetry.FailSpan(span, err)
-		return nil, err
-	}
-
-	if statusCode != http.StatusOK {
-		err := fmt.Errorf("HTTP %d: %s", statusCode, string(respBody))
-		telemetry.FailSpan(span, err)
 		return nil, err
 	}
 
 	var gqlResp graphQLResponse
 	if err := json.Unmarshal(respBody, &gqlResp); err != nil {
-		telemetry.FailSpan(span, err)
 		return nil, fmt.Errorf("parse graphql response: %w", err)
 	}
 
-	if len(gqlResp.Errors) > 0 {
-		err := fmt.Errorf("graphql error: %s", gqlResp.Errors[0].Message)
-		telemetry.FailSpan(span, err)
+	if err := gqlResp.Errors.err("graphql"); err != nil {
 		return nil, err
 	}
 

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 )
@@ -77,11 +78,11 @@ func (m *Manager) Stop(timeout time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	for i := len(m.services) - 1; i >= 0; i-- {
-		if s, ok := m.services[i].service.(Stopper); ok {
+	for _, e := range slices.Backward(m.services) {
+		if s, ok := e.service.(Stopper); ok {
 			if err := s.Stop(ctx); err != nil {
 				slog.Error("Service stop error",
-					"service", m.services[i].name,
+					"service", e.name,
 					"error", err,
 				)
 			}
@@ -112,12 +113,12 @@ func (m *Manager) supervise(ctx context.Context, e entry) {
 			}
 		}()
 
-		// --- Exit if context is done ---
+		// Exit if the context is done.
 		if ctx.Err() != nil {
 			return
 		}
 
-		// --- Brief pause before restart to avoid tight loops ---
+		// Pause briefly before restarting to avoid a tight loop.
 		restartDelay := time.NewTimer(1 * time.Second)
 		select {
 		case <-restartDelay.C:

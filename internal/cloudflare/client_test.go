@@ -32,7 +32,7 @@ func TestQueryAuditLogs_Success(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		verifyAuthHeader(t, r)
 
-		// --- Verify request path and query params ---
+		// Verify the request path and query params.
 		if !contains(r.URL.Path, "/accounts/test-account/logs/audit") {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
@@ -91,7 +91,7 @@ func TestQueryAuditLogs_Pagination(t *testing.T) {
 
 		switch cursor {
 		case "":
-			// --- First page ---
+			// First page.
 			_, _ = w.Write([]byte(`{
 				"success": true,
 				"result": [
@@ -101,7 +101,7 @@ func TestQueryAuditLogs_Pagination(t *testing.T) {
 				"result_info": {"count": 2, "cursor": "next-page-cursor"}
 			}`))
 		case "next-page-cursor":
-			// --- Second page ---
+			// Second page.
 			_, _ = w.Write([]byte(`{
 				"success": true,
 				"result": [

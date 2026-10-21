@@ -235,7 +235,7 @@ func TestNewEntry_TimestampFormat(t *testing.T) {
 		t.Errorf("line = %q, want %q", entry.Line, `{"msg":"test"}`)
 	}
 
-	// --- Timestamp should be nanoseconds since epoch ---
+	// The timestamp is nanoseconds since the epoch.
 	want := fmt.Sprintf("%d", ts.UnixNano())
 	if entry.Timestamp != want {
 		t.Errorf("timestamp = %q, want %q", entry.Timestamp, want)

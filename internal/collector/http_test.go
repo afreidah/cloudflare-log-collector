@@ -7,7 +7,9 @@
 // poll: how traffic groups map onto the request, origin, and bytes counters
 // (normalized host, cache status, request source, origin vs edge status), that
 // the counters accumulate across windows and count a window exactly once when
-// a failed push is retried, and its spec wiring.
+// a failed push is retried, and its spec wiring. Also the latency polls on top
+// of the shared trailing poll: per-host quantiles in seconds for each kind,
+// and their independence from the traffic poll.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -16,9 +18,12 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // httpGroup builds a traffic group; fields left zero stay zero.
@@ -138,4 +143,75 @@ func TestHTTPPoll_LokiRecovers_CountsWindowOnce(t *testing.T) {
 	if len(cf.httpCalls) != 2 {
 		t.Errorf("http querier called %d times, want 2", len(cf.httpCalls))
 	}
+}
+
+// -------------------------------------------------------------------------
+// LATENCY
+// -------------------------------------------------------------------------
+
+// resetLatencyMetrics clears the process-global latency gauges so a test
+// asserts exact series.
+func resetLatencyMetrics() {
+	metrics.HTTPOriginLatencySeconds.Reset()
+	metrics.HTTPEdgeTTFBSeconds.Reset()
+}
+
+func TestHTTPPoll_LatencyQuantilesPerHost(t *testing.T) {
+	resetLatencyMetrics()
+	cf := &fakeCloudflare{
+		originLatency: []cloudflare.HTTPLatencyGroup[cloudflare.OriginLatencyQuantiles]{{
+			Dimensions: cloudflare.HTTPLatencyDimensions{ClientRequestHTTPHost: "G3.munchbox.cc:443"},
+			Quantiles:  cloudflare.OriginLatencyQuantiles{OriginResponseDurationMsP50: 25, OriginResponseDurationMsP95: 36, OriginResponseDurationMsP99: 380},
+		}},
+		edgeLatency: []cloudflare.HTTPLatencyGroup[cloudflare.EdgeLatencyQuantiles]{{
+			Dimensions: cloudflare.HTTPLatencyDimensions{ClientRequestHTTPHost: "b2-proxy.munchbox.cc"},
+			Quantiles:  cloudflare.EdgeLatencyQuantiles{EdgeTimeToFirstByteMsP50: 271, EdgeTimeToFirstByteMsP95: 882, EdgeTimeToFirstByteMsP99: 1769},
+		}},
+	}
+	c := NewHTTPCollector(zoneTestConfig(cf, &fakePusher{}))
+
+	c.poll(context.Background())
+
+	// Each latency query runs once for the zone over the trailing window.
+	for name, calls := range map[string][]queryCall{"origin": cf.originCalls, "edge": cf.edgeCalls} {
+		if len(calls) != 1 || calls[0].scopeID != "zone1" || calls[0].until.Sub(calls[0].since) != 15*time.Minute {
+			t.Errorf("%s latency calls = %+v, want one for zone1 over the 15m trailing window", name, calls)
+		}
+	}
+
+	// Milliseconds become seconds, each quantile is its own series, and the
+	// host is normalized like the traffic host label.
+	assertGaugeValue(t, metrics.HTTPOriginLatencySeconds.WithLabelValues("0.5", "g3.munchbox.cc", "example.com"), 0.025)
+	assertGaugeValue(t, metrics.HTTPOriginLatencySeconds.WithLabelValues("0.95", "g3.munchbox.cc", "example.com"), 0.036)
+	assertGaugeValue(t, metrics.HTTPOriginLatencySeconds.WithLabelValues("0.99", "g3.munchbox.cc", "example.com"), 0.38)
+	assertGaugeValue(t, metrics.HTTPEdgeTTFBSeconds.WithLabelValues("0.95", "b2-proxy.munchbox.cc", "example.com"), 0.882)
+
+	// A Worker host has edge latency but no origin latency.
+	if got := testutil.CollectAndCount(metrics.HTTPOriginLatencySeconds); got != 3 {
+		t.Errorf("origin latency series = %d, want 3 (one host x 3 quantiles)", got)
+	}
+}
+
+func TestHTTPPoll_LatencyFailureLeavesTrafficAndGaugesAlone(t *testing.T) {
+	resetHTTPMetrics()
+	resetLatencyMetrics()
+	metrics.HTTPOriginLatencySeconds.WithLabelValues("0.95", "g3.munchbox.cc", "example.com").Set(0.04)
+	cf := &fakeCloudflare{
+		httpGroups: []cloudflare.HTTPRequestGroup{httpGroup(4, 40, cloudflare.HTTPRequestDimensions{
+			ClientRequestHTTPHost: "example.com", ClientRequestHTTPMethodName: "GET", EdgeResponseStatus: 200,
+			CacheStatus: "dynamic", RequestSource: "eyeball", ClientCountryName: "US",
+		})},
+		latencyErr: errors.New("boom"),
+	}
+	c := NewHTTPCollector(zoneTestConfig(cf, &fakePusher{}))
+
+	c.poll(context.Background())
+
+	// The polls are independent: traffic is still counted and the cursor
+	// moves, and the failed latency poll keeps its last values.
+	assertCounterValue(t, metrics.HTTPRequestsTotal.WithLabelValues("GET", "200", "US", "example.com", "dynamic", "eyeball", "example.com"), 4)
+	if !c.lastSeen.Equal(cf.httpCalls[0].until) {
+		t.Errorf("cursor = %v, want the traffic window end %v", c.lastSeen, cf.httpCalls[0].until)
+	}
+	assertGaugeValue(t, metrics.HTTPOriginLatencySeconds.WithLabelValues("0.95", "g3.munchbox.cc", "example.com"), 0.04)
 }
