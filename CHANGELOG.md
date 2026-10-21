@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.25](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.24...v0.1.25) (2026-10-21)
+
+
+### Features
+
+* **http:** per-host origin and edge latency quantiles ([#119](https://github.com/afreidah/cloudflare-log-collector/issues/119)) ([7b4a98a](https://github.com/afreidah/cloudflare-log-collector/commit/7b4a98a2ea753b88fce49b1ae77cf1e883e937a2)), closes [#100](https://github.com/afreidah/cloudflare-log-collector/issues/100)
+
 ## [0.1.24](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.23...v0.1.24) (2026-10-20)
 
 
