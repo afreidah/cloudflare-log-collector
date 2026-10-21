@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.24](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.23...v0.1.24) (2026-10-20)
+
+
+### Features
+
+* **rum:** per-host breakdown and bot filtering ([#115](https://github.com/afreidah/cloudflare-log-collector/issues/115)) ([e260f4e](https://github.com/afreidah/cloudflare-log-collector/commit/e260f4e937f79eadc0645f2a6625fd8a330d9ec9)), closes [#110](https://github.com/afreidah/cloudflare-log-collector/issues/110)
+
 ## [0.1.23](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.22...v0.1.23) (2026-10-20)
 
 
