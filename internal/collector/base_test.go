@@ -4,8 +4,9 @@
 // Author: Alex Freidah
 //
 // Covers what every collector inherits from its base: the stream labels and
-// cursor start derived from its identity, poll-outcome metrics, and the poll
-// loop's schedule and shutdown.
+// cursor start derived from its identity, poll-outcome metrics, the data
+// metric helpers (duration conversion and the no-data sentinel, clearing one
+// scope), and the poll loop's schedule and shutdown.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -18,6 +19,7 @@ import (
 
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -177,6 +179,45 @@ func TestRecordPoll_ErrorDoesNotSetLastPoll(t *testing.T) {
 	if got := testutil.CollectAndCount(metrics.LastPollTimestamp); got != 0 {
 		t.Errorf("last poll timestamp series = %d, want 0 after only a failed poll", got)
 	}
+}
+
+// -------------------------------------------------------------------------
+// DATA METRICS
+// -------------------------------------------------------------------------
+
+// testGauge is an unregistered gauge ending in the scope label, like every
+// collector data metric.
+func testGauge() *prometheus.GaugeVec {
+	return prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_gauge"}, []string{"kind", "zone"})
+}
+
+func TestSetDuration_ConvertsUnitsAndSkipsSentinel(t *testing.T) {
+	b := testBase(time.Minute)
+	gauge := testGauge()
+
+	b.setDuration(gauge, 250, time.Millisecond, "ms")
+	b.setDuration(gauge, 1396000, time.Microsecond, "us")
+	b.setDuration(gauge, -1, time.Millisecond, "none")
+
+	assertGaugeValue(t, gauge.WithLabelValues("ms", "example.com"), 0.25)
+	assertGaugeValue(t, gauge.WithLabelValues("us", "example.com"), 1.396)
+	if got := testutil.CollectAndCount(gauge); got != 2 {
+		t.Errorf("series = %d, want 2 (the -1 no-data sentinel is skipped, not set to 0)", got)
+	}
+}
+
+func TestClear_RemovesOnlyThisScopesSeries(t *testing.T) {
+	b := testBase(time.Minute)
+	gauge := testGauge()
+	b.set(gauge, 1, "a")
+	gauge.WithLabelValues("a", "other.example").Set(2)
+
+	b.clear(gauge)
+
+	if got := testutil.CollectAndCount(gauge); got != 1 {
+		t.Fatalf("series = %d, want 1 (only the other scope's)", got)
+	}
+	assertGaugeValue(t, gauge.WithLabelValues("a", "other.example"), 2)
 }
 
 // -------------------------------------------------------------------------

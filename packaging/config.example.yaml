@@ -21,6 +21,7 @@ cloudflare:
   # Analytics must be enabled on the zone, and the API token needs Account
   # Analytics Read. site_tag is the Web Analytics site identifier.
   # ingestion_lag holds page-load windows back from now while RUM data lands.
+  # vitals_window is how far back the Core Web Vitals p75 reaches.
   web_analytics:
     enabled: false
     account_id: "${CF_ACCOUNT_ID}"
@@ -28,12 +29,15 @@ cloudflare:
       - site_tag: "${CF_RUM_SITE_TAG}"
         name: "example.com"
     ingestion_lag: 10m
+    vitals_window: 1h
   poll_interval: 5m
   backfill_window: 1h
   # Hold firewall, HTTP, and audit poll windows back from now so Cloudflare has
   # finished ingesting them before they are read. Must be less than
   # backfill_window.
   ingestion_lag: 3m
+  # How far back the per-host HTTP origin and edge latency quantiles reach.
+  latency_window: 15m
 
 loki:
   endpoint: "http://loki:3100"

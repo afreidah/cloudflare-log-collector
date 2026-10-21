@@ -44,13 +44,20 @@ type queryCall struct {
 
 // fakeCloudflare implements cloudflareQuerier and auditQuerier with canned
 // responses and a shared error, recording every call's arguments per dataset.
+// latencyErr fails only the two latency queries, so a test can tell the HTTP
+// collector's polls apart.
 type fakeCloudflare struct {
 	firewallEvents []cloudflare.FirewallEvent
 	httpGroups     []cloudflare.HTTPRequestGroup
+	originLatency  []cloudflare.HTTPLatencyGroup[cloudflare.OriginLatencyQuantiles]
+	edgeLatency    []cloudflare.HTTPLatencyGroup[cloudflare.EdgeLatencyQuantiles]
 	auditEvents    []cloudflare.AuditLogEvent
 	err            error
+	latencyErr     error
 	firewallCalls  []queryCall
 	httpCalls      []queryCall
+	originCalls    []queryCall
+	edgeCalls      []queryCall
 	auditCalls     []queryCall
 }
 
@@ -62,6 +69,16 @@ func (f *fakeCloudflare) QueryFirewallEvents(_ context.Context, zoneID string, s
 func (f *fakeCloudflare) QueryHTTPRequests(_ context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPRequestGroup, error) {
 	f.httpCalls = append(f.httpCalls, queryCall{zoneID, since, until})
 	return f.httpGroups, f.err
+}
+
+func (f *fakeCloudflare) QueryHTTPOriginLatency(_ context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPLatencyGroup[cloudflare.OriginLatencyQuantiles], error) {
+	f.originCalls = append(f.originCalls, queryCall{zoneID, since, until})
+	return f.originLatency, f.latencyErr
+}
+
+func (f *fakeCloudflare) QueryHTTPEdgeLatency(_ context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPLatencyGroup[cloudflare.EdgeLatencyQuantiles], error) {
+	f.edgeCalls = append(f.edgeCalls, queryCall{zoneID, since, until})
+	return f.edgeLatency, f.latencyErr
 }
 
 func (f *fakeCloudflare) QueryAuditLogs(_ context.Context, accountID string, since, before time.Time) ([]cloudflare.AuditLogEvent, error) {

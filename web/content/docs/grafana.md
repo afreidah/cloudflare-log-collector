@@ -5,7 +5,7 @@ weight: 15
 
 <p class="landing-subheader">Pre-built Grafana dashboard for monitoring Cloudflare analytics collection</p>
 
-The dashboard tracks the full collection pipeline at a glance. **Poll health** panels show success/failure rates, latency histograms, and last-poll timestamps for each dataset and zone. **Firewall events** are broken down by action type (block, challenge, allow) with trending counters. **HTTP traffic** panels display client request rates by domain, method, status code, and country alongside bandwidth. **Per-service** panels split HTTP traffic by host: request rate, 5xx error rate, cache hit ratio, and requests where the origin was unreachable. **Audit** and **RUM** panels cover account audit actions, browser page views per service, and Core Web Vitals per host; the same Service selector filters both a service's HTTP and RUM panels. **Loki push** panels monitor push success rates and latency to catch delivery issues early. Build info and version metadata round out the overview.
+The dashboard tracks the full collection pipeline at a glance. **Poll health** panels show success/failure rates, latency histograms, and last-poll timestamps for each dataset and zone. **Firewall events** are broken down by action type (block, challenge, allow) with trending counters. **HTTP traffic** panels display client request rates by domain, method, status code, and country alongside bandwidth. **Per-service** panels split HTTP traffic by host: request rate, 5xx error rate, cache hit ratio, 5xx responses with no origin (an unreachable origin for a tunneled service, a failing Worker otherwise), the upstream errors behind Workers, and origin latency and edge time to first byte at p95. **Audit** and **RUM** panels cover account audit actions, browser page views per service, and Core Web Vitals per host; the same Service selector filters both a service's HTTP and RUM panels. **Loki push** panels monitor push success rates and latency to catch delivery issues early. Build info and version metadata round out the overview.
 
 ![Grafana Dashboard](/images/grafana.png)
 
@@ -23,6 +23,8 @@ The dashboard visualizes the following Prometheus metrics exposed on the configu
 | `cflog_http_requests_total` | counter | `method`, `status`, `country`, `host`, `cache_status`, `source`, `zone` | Cumulative HTTP requests |
 | `cflog_http_origin_requests_total` | counter | `host`, `origin_status`, `status`, `source`, `zone` | Cumulative HTTP requests by origin status and edge status |
 | `cflog_http_bytes_total` | counter | `type`, `host`, `source`, `zone` | Cumulative edge response bytes |
+| `cflog_http_origin_latency_seconds` | gauge | `quantile`, `host`, `zone` | Origin response time p50/p95/p99 over the trailing latency window (client requests an origin answered) |
+| `cflog_http_edge_ttfb_seconds` | gauge | `quantile`, `host`, `zone` | Edge time to first byte p50/p95/p99 over the trailing latency window (client requests, cache hits included) |
 | `cflog_rum_pageviews_total` | counter | `country`, `device`, `host`, `site` | RUM page views (known bots excluded) |
 | `cflog_rum_sessions_total` | counter | `country`, `device`, `host`, `site` | RUM sessions (entry page loads, known bots excluded) |
 | `cflog_rum_web_vital_seconds` | gauge | `vital`, `device`, `host`, `site` | Core Web Vitals p75 in seconds (lcp, inp, fid, fcp, ttfb), real browsers only |

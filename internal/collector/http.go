@@ -6,9 +6,10 @@
 // Polls the Cloudflare httpRequestsAdaptiveGroups dataset on a configurable
 // interval. Accumulates aggregated traffic statistics into Prometheus counters -
 // per host, with cache, origin, and request-source breakdowns - and ships raw
-// traffic groups to Loki as structured JSON logs. Its seek cursor
-// moves to the end of each handled window (see cursor.go), and each cycle runs
-// through the shared cursor-based poll in poll.go.
+// traffic groups to Loki as structured JSON logs; the traffic cursor moves to
+// the end of each handled window (see cursor.go) through the shared
+// cursor-based poll. Per-host origin and edge latency quantiles are reported
+// as gauges through the shared trailing poll. Both templates live in poll.go.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -20,6 +21,8 @@ import (
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // -------------------------------------------------------------------------
@@ -27,8 +30,10 @@ import (
 // -------------------------------------------------------------------------
 
 // HTTPCollector polls Cloudflare for HTTP traffic stats, updates Prometheus
-// counters, and ships raw traffic data to Loki. The base's scope is the zone
-// name.
+// counters, and ships raw traffic data to Loki, and reports per-host origin
+// and edge latency quantiles as gauges. The base's scope is the zone name.
+// lastSeen is the traffic cursor; the latency polls use the trailing window
+// and need no cursor.
 type HTTPCollector struct {
 	base
 	cf       httpQuerier
@@ -62,9 +67,21 @@ func (c *HTTPCollector) Run(ctx context.Context) error {
 	return c.run(ctx, c.lastSeen, c.poll)
 }
 
-// poll runs one HTTP traffic poll cycle; the cursor moves to the end of each
-// handled window.
+// poll runs the traffic poll and both latency polls. They are independent: a
+// failure in one does not block or affect the others.
 func (c *HTTPCollector) poll(ctx context.Context) {
+	c.pollTraffic(ctx)
+	pollLatency(ctx, c, DatasetHTTPOriginLatency, "HTTP origin latency", metrics.HTTPOriginLatencySeconds, c.cf.QueryHTTPOriginLatency)
+	pollLatency(ctx, c, DatasetHTTPEdgeLatency, "HTTP edge latency", metrics.HTTPEdgeTTFBSeconds, c.cf.QueryHTTPEdgeLatency)
+}
+
+// -------------------------------------------------------------------------
+// TRAFFIC (counters + Loki, advancing cursor)
+// -------------------------------------------------------------------------
+
+// pollTraffic runs one HTTP traffic poll cycle; the cursor moves to the end of
+// each handled window.
+func (c *HTTPCollector) pollTraffic(ctx context.Context) {
 	pollCursor(ctx, &c.base, cursorPoll[cloudflare.HTTPRequestGroup]{
 		dataset:   DatasetHTTP,
 		span:      "http.poll",
@@ -97,4 +114,37 @@ func (c *HTTPCollector) updateMetrics(groups []cloudflare.HTTPRequestGroup) {
 			host, statusLabel(d.OriginResponseStatus), status, d.RequestSource)
 		c.add(metrics.HTTPBytesTotal, float64(groups[i].Sum.EdgeResponseBytes), "edge", host, d.RequestSource)
 	}
+}
+
+// -------------------------------------------------------------------------
+// LATENCY (gauges, trailing window)
+// -------------------------------------------------------------------------
+
+// latencyQuery is a zone latency query on the Cloudflare client, returning one
+// group per host with quantile set Q.
+type latencyQuery[Q cloudflare.LatencyQuantiles] func(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPLatencyGroup[Q], error)
+
+// pollLatency runs one trailing poll of a latency dataset, repopulating gauge
+// with each host's p50, p95, and p99 in seconds. Origin and edge latency
+// differ only in their dataset, gauge, and query, so both run through here.
+func pollLatency[Q cloudflare.LatencyQuantiles](ctx context.Context, c *HTTPCollector, dataset Dataset, title string, gauge *prometheus.GaugeVec, query latencyQuery[Q]) {
+	pollTrailing(ctx, &c.base, trailingPoll[cloudflare.HTTPLatencyGroup[Q]]{
+		dataset:   dataset,
+		span:      dataset.String() + ".poll",
+		title:     title,
+		countAttr: telemetry.AttrGroupCount,
+		query: func(ctx context.Context, since, until time.Time) ([]cloudflare.HTTPLatencyGroup[Q], error) {
+			return query(ctx, c.zoneID, since, until)
+		},
+		gauges: []*prometheus.GaugeVec{gauge},
+		set: func(groups []cloudflare.HTTPLatencyGroup[Q]) {
+			for i := range groups {
+				host := normalizeHost(groups[i].Dimensions.ClientRequestHTTPHost)
+				p := groups[i].Quantiles.Percentiles()
+				c.setDuration(gauge, p.P50, time.Millisecond, "0.5", host)
+				c.setDuration(gauge, p.P95, time.Millisecond, "0.95", host)
+				c.setDuration(gauge, p.P99, time.Millisecond, "0.99", host)
+			}
+		},
+	})
 }

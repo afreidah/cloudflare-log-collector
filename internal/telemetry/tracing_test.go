@@ -67,13 +67,11 @@ func TestStartSpan_CreatesInternalSpan(t *testing.T) {
 func TestStartClientSpan_CreatesClientSpan(t *testing.T) {
 	exporter := setupTestTracer(t)
 
-	ctx, span := StartClientSpan(context.Background(), "test.client",
-		attribute.String("peer.service", "downstream"),
-		attribute.String("server.address", "example.com"),
+	_, span := StartClientSpan(context.Background(), "test.client", "downstream", "example.com",
+		attribute.String("extra", "kept"),
 	)
 	span.End()
 
-	_ = ctx
 	spans := exporter.GetSpans()
 	if len(spans) != 1 {
 		t.Fatalf("got %d spans, want 1", len(spans))
@@ -86,16 +84,17 @@ func TestStartClientSpan_CreatesClientSpan(t *testing.T) {
 		t.Errorf("span kind = %v, want %v (CLIENT)", spans[0].SpanKind, trace.SpanKindClient)
 	}
 
-	// Verify peer.service attribute is present
-	found := false
+	// The peer arguments become peer.service and server.address, and extra
+	// attributes are kept alongside them.
+	got := map[string]string{}
 	for _, attr := range spans[0].Attributes {
-		if string(attr.Key) == "peer.service" && attr.Value.AsString() == "downstream" {
-			found = true
-			break
-		}
+		got[string(attr.Key)] = attr.Value.AsString()
 	}
-	if !found {
-		t.Error("expected peer.service attribute on client span")
+	want := map[string]string{"peer.service": "downstream", "server.address": "example.com", "extra": "kept"}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("attribute %s = %q, want %q", k, got[k], v)
+		}
 	}
 }
 
@@ -103,9 +102,7 @@ func TestStartClientSpan_IsChildOfParent(t *testing.T) {
 	exporter := setupTestTracer(t)
 
 	ctx, parent := StartSpan(context.Background(), "parent.poll")
-	_, child := StartClientSpan(ctx, "child.api_call",
-		attribute.String("peer.service", "external-api"),
-	)
+	_, child := StartClientSpan(ctx, "child.api_call", "external-api", "api.example.com")
 	child.End()
 	parent.End()
 

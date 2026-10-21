@@ -96,17 +96,13 @@ type auditLogsResponse struct {
 		Count  int    `json:"count"`
 		Cursor string `json:"cursor"`
 	} `json:"result_info"`
-	Errors []struct {
-		Message string `json:"message"`
-	} `json:"errors"`
+	Errors apiErrors `json:"errors"`
 }
 
 // QueryAuditLogs fetches account audit logs for the given account and time range.
 // Paginates through all available results using cursor-based pagination.
 func (c *Client) QueryAuditLogs(ctx context.Context, accountID string, since, before time.Time) ([]AuditLogEvent, error) {
-	ctx, span := telemetry.StartClientSpan(ctx, "cloudflare.audit_logs",
-		attribute.String("peer.service", "cloudflare-api"),
-		attribute.String("server.address", "api.cloudflare.com"),
+	ctx, span := startAPISpan(ctx, "cloudflare.audit_logs",
 		attribute.String("cflog.account_id", accountID),
 		attribute.String("cflog.since", since.UTC().Format(time.RFC3339)),
 		attribute.String("cflog.before", before.UTC().Format(time.RFC3339)),
@@ -124,7 +120,7 @@ func (c *Client) QueryAuditLogs(ctx context.Context, accountID string, since, be
 			return nil, fmt.Errorf("audit logs query: %w", err)
 		}
 
-		// --- Inject account ID into each event for downstream use ---
+		// Inject the account ID into each event for downstream use.
 		for i := range events {
 			events[i].AccountID = accountID
 		}
@@ -137,7 +133,7 @@ func (c *Client) QueryAuditLogs(ctx context.Context, accountID string, since, be
 		cursor = nextCursor
 	}
 
-	span.SetAttributes(attribute.Int("cflog.event_count", len(allEvents)))
+	span.SetAttributes(telemetry.AttrEventCount.Int(len(allEvents)))
 
 	return allEvents, nil
 }
@@ -146,7 +142,7 @@ func (c *Client) QueryAuditLogs(ctx context.Context, accountID string, since, be
 // request is rebuilt for every attempt by the shared retrying executor, so no
 // per-request state leaks across retries.
 func (c *Client) doAuditQuery(ctx context.Context, endpoint string, since, before time.Time, cursor string) ([]AuditLogEvent, string, error) {
-	respBody, statusCode, err := c.doWithRetry(ctx, func() (*http.Request, error) {
+	respBody, err := c.doWithRetry(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
 			return nil, err
@@ -161,17 +157,10 @@ func (c *Client) doAuditQuery(ctx context.Context, endpoint string, since, befor
 			q.Set("cursor", cursor)
 		}
 		req.URL.RawQuery = q.Encode()
-
-		req.Header.Set("Authorization", "Bearer "+c.apiToken)
-		req.Header.Set("Content-Type", "application/json")
 		return req, nil
 	})
 	if err != nil {
 		return nil, "", err
-	}
-
-	if statusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("HTTP %d: %s", statusCode, string(respBody))
 	}
 
 	var auditResp auditLogsResponse
@@ -179,8 +168,8 @@ func (c *Client) doAuditQuery(ctx context.Context, endpoint string, since, befor
 		return nil, "", fmt.Errorf("parse audit logs response: %w", err)
 	}
 
-	if len(auditResp.Errors) > 0 {
-		return nil, "", fmt.Errorf("audit logs error: %s", auditResp.Errors[0].Message)
+	if err := auditResp.Errors.err("audit logs"); err != nil {
+		return nil, "", err
 	}
 
 	return auditResp.Result, auditResp.ResultInfo.Cursor, nil

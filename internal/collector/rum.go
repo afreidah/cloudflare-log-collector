@@ -8,9 +8,10 @@
 // shapes: page loads are counted, so they run through the shared cursor-based
 // poll in poll.go, held back by the Web Analytics ingestion lag, and accumulate
 // into counters - raw rows ship to Loki, bounded counters to Prometheus. Web
-// vitals are p75 quantiles, which cannot be accumulated, so each poll reports
-// the p75 over a fixed trailing window into gauges; re-querying that window
-// every poll self-heals late data, so it needs no lag. The RUM datasets are
+// vitals are p75 quantiles, which cannot be accumulated, so they run through
+// the shared trailing poll, reporting the p75 over a fixed trailing window into
+// gauges; re-querying that window every poll self-heals late data, so it needs
+// no lag. The RUM datasets are
 // account-scoped and identified by site tag. A site covers every host in its
 // zone, so all RUM metrics carry a host label, and known bots are kept out of
 // them: bot page loads ship to Loki but are not counted, and web vitals are
@@ -21,12 +22,13 @@ package collector
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // -------------------------------------------------------------------------
@@ -54,7 +56,7 @@ type RUMCollectorConfig struct {
 // Prometheus. The base's scope is the site name. pageloadSeen is the seek
 // cursor for the page-view counter stream; it advances only when a poll fully
 // succeeds (queried, shipped, counted) so a page view is counted exactly once
-// across polls. Web vitals use a rolling window instead and need no cursor.
+// across polls. Web vitals use the trailing window instead and need no cursor.
 type RUMCollector struct {
 	base
 	cf           rumQuerier
@@ -137,69 +139,43 @@ func (c *RUMCollector) updatePageloadMetrics(groups []cloudflare.RUMPageloadGrou
 }
 
 // -------------------------------------------------------------------------
-// WEB VITALS (gauges, rolling window)
+// WEB VITALS (gauges, trailing window)
 // -------------------------------------------------------------------------
 
-// pollWebVitals reports the Core Web Vitals p75 over a fixed trailing window.
-// Quantiles cannot be accumulated, so there is no cursor: each poll re-queries
-// the rolling window and overwrites the gauges.
+// pollWebVitals reports the Core Web Vitals p75 over the trailing window
+// through the shared trailing poll, which clears and repopulates the gauges.
 func (c *RUMCollector) pollWebVitals(ctx context.Context) {
-	ctx, span := telemetry.StartSpan(ctx, "rum.webvitals.poll",
-		telemetry.AttrDataset.String(DatasetRUMWebVitals.String()),
-		c.scopeAttr(),
-	)
-	defer span.End()
-
-	start := time.Now()
-	until := start.UTC()
-	since := until.Add(-c.backfillWindow)
-
-	groups, err := c.cf.QueryRUMWebVitals(ctx, c.accountID, c.siteTag, since, until)
-	c.recordPoll(DatasetRUMWebVitals, start, err)
-	if err != nil {
-		c.fail(ctx, span, "RUM web vitals poll failed", err)
-		return
-	}
-
-	span.SetAttributes(telemetry.AttrGroupCount.Int(len(groups)))
-
-	// Clear this site's vitals before repopulating so a host or device type
-	// absent from the latest window does not linger at a stale value.
-	c.clear(metrics.RUMWebVitalSeconds)
-	c.clear(metrics.RUMCumulativeLayoutShift)
-
-	c.updateWebVitalsMetrics(groups)
-	slog.DebugContext(ctx, "RUM web vitals collected", "site", c.scope, "groups", len(groups))
+	pollTrailing(ctx, &c.base, trailingPoll[cloudflare.RUMWebVitalsGroup]{
+		dataset:   DatasetRUMWebVitals,
+		span:      "rum.webvitals.poll",
+		title:     "RUM web vitals",
+		countAttr: telemetry.AttrGroupCount,
+		query: func(ctx context.Context, since, until time.Time) ([]cloudflare.RUMWebVitalsGroup, error) {
+			return c.cf.QueryRUMWebVitals(ctx, c.accountID, c.siteTag, since, until)
+		},
+		gauges: []*prometheus.GaugeVec{metrics.RUMWebVitalSeconds, metrics.RUMCumulativeLayoutShift},
+		set:    c.updateWebVitalsMetrics,
+	})
 }
 
 // updateWebVitalsMetrics sets the per-host, per-device Core Web Vitals gauges
-// from the rolling-window quantiles. Known bots are already filtered out by the
-// query.
+// from the trailing-window quantiles. The time-based vitals arrive in
+// microseconds. Known bots are already filtered out by the query.
 func (c *RUMCollector) updateWebVitalsMetrics(groups []cloudflare.RUMWebVitalsGroup) {
 	for i := range groups {
 		host := normalizeHost(groups[i].Dimensions.RequestHost)
 		device := groups[i].Dimensions.DeviceType
 		q := groups[i].Quantiles
 
-		c.setTimeVital("lcp", device, host, q.LargestContentfulPaintP75)
-		c.setTimeVital("inp", device, host, q.InteractionToNextPaintP75)
-		c.setTimeVital("fid", device, host, q.FirstInputDelayP75)
-		c.setTimeVital("fcp", device, host, q.FirstContentfulPaintP75)
-		c.setTimeVital("ttfb", device, host, q.TimeToFirstByteP75)
+		c.setDuration(metrics.RUMWebVitalSeconds, q.LargestContentfulPaintP75, time.Microsecond, "lcp", device, host)
+		c.setDuration(metrics.RUMWebVitalSeconds, q.InteractionToNextPaintP75, time.Microsecond, "inp", device, host)
+		c.setDuration(metrics.RUMWebVitalSeconds, q.FirstInputDelayP75, time.Microsecond, "fid", device, host)
+		c.setDuration(metrics.RUMWebVitalSeconds, q.FirstContentfulPaintP75, time.Microsecond, "fcp", device, host)
+		c.setDuration(metrics.RUMWebVitalSeconds, q.TimeToFirstByteP75, time.Microsecond, "ttfb", device, host)
 
-		// CLS is a unitless layout-shift score, not a duration.
+		// CLS is a unitless layout-shift score, not a duration; -1 is "no data".
 		if cls := q.CumulativeLayoutShiftP75; cls >= 0 {
 			c.set(metrics.RUMCumulativeLayoutShift, cls, device, host)
 		}
 	}
-}
-
-// setTimeVital records a time-based Core Web Vital, converting the API's
-// microseconds to seconds. The -1 "no data" sentinel (e.g. no first-input delay
-// when there was no interaction) is skipped so it never shows up as a real 0.
-func (c *RUMCollector) setTimeVital(vital, device, host string, microseconds float64) {
-	if microseconds < 0 {
-		return
-	}
-	c.set(metrics.RUMWebVitalSeconds, microseconds/1e6, vital, device, host)
 }

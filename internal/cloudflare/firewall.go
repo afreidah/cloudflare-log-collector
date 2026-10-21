@@ -41,5 +41,5 @@ var firewallDataset = newDataset[FirewallEvent](datasetSpec{
 
 // QueryFirewallEvents fetches firewall events for the given zone and time range.
 func (c *Client) QueryFirewallEvents(ctx context.Context, zoneID string, since, until time.Time) ([]FirewallEvent, error) {
-	return queryDataset(ctx, c, firewallDataset, zoneID, since, until, map[string]any{"zoneId": zoneID})
+	return queryZone(ctx, c, firewallDataset, zoneID, since, until)
 }

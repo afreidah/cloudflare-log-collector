@@ -10,7 +10,8 @@
 // drift from the struct. The rest of the document - variables, the zone or
 // account node, the window filter, the limit - is the same skeleton for every
 // dataset, written once. queryDataset runs a dataset over a time window and
-// extracts its rows from the response.
+// extracts its rows from the response; queryZone and querySite supply the
+// zone or site variables for it.
 // -------------------------------------------------------------------------------
 
 package cloudflare
@@ -43,6 +44,13 @@ type queryScope struct {
 var (
 	zoneScope    = queryScope{node: "zones", filterKey: "zoneTag", variable: "zoneId"}
 	accountScope = queryScope{node: "accounts", filterKey: "accountTag", variable: "accountId"}
+)
+
+// siteTagVar is the variable a Web Analytics dataset is filtered by, and
+// siteFilter its filter term; every site dataset declares and applies both.
+const (
+	siteTagVar = "siteTag"
+	siteFilter = "siteTag: $siteTag"
 )
 
 // -------------------------------------------------------------------------
@@ -133,6 +141,18 @@ func queryDataset[T any](ctx context.Context, c *Client, ds dataset[T], scopeTag
 	}
 
 	return rows, nil
+}
+
+// queryZone runs a zone-scoped dataset for one zone over (since, until].
+func queryZone[T any](ctx context.Context, c *Client, ds dataset[T], zoneID string, since, until time.Time) ([]T, error) {
+	return queryDataset(ctx, c, ds, zoneID, since, until, map[string]any{zoneScope.variable: zoneID})
+}
+
+// querySite runs an account-scoped Web Analytics dataset for one site over
+// (since, until]. The dataset's spec must declare and filter on $siteTag.
+func querySite[T any](ctx context.Context, c *Client, ds dataset[T], accountID, siteTag string, since, until time.Time) ([]T, error) {
+	return queryDataset(ctx, c, ds, siteTag, since, until,
+		map[string]any{accountScope.variable: accountID, siteTagVar: siteTag})
 }
 
 // -------------------------------------------------------------------------

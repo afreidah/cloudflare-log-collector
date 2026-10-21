@@ -62,7 +62,9 @@ Aggregated HTTP traffic statistics grouped per minute by host, method, edge and 
 
 Fields captured: `count`, `datetimeMinute`, `clientRequestHTTPHost`, `clientRequestHTTPMethodName`, `edgeResponseStatus`, `originResponseStatus`, `cacheStatus`, `requestSource`, `clientCountryName`, `edgeResponseBytes`.
 
-Every service sharing a zone gets its own `host` series (lowercased, port stripped). `source` is Cloudflare's request source: `eyeball` for real clients, other values (e.g. `edgeWorkerFetch`) for Cloudflare-internal traffic such as a Worker's own subrequests, which would otherwise count a proxied request twice - filter client traffic with `source="eyeball"`. `origin_status="0"` means no origin answered; together with a 5xx edge `status` it marks an unreachable origin.
+Every service sharing a zone gets its own `host` series (lowercased, port stripped). `source` is Cloudflare's request source: `eyeball` for real clients, other values (e.g. `edgeWorkerFetch`) for Cloudflare-internal traffic such as a Worker's own subrequests, which would otherwise count a proxied request twice - filter client traffic with `source="eyeball"`. `origin_status="0"` means no origin answered; together with a 5xx edge `status` it marks an unreachable origin for a tunneled service. A Worker host (e.g. a Worker proxying object storage) never has an origin, so there it means the Worker returned a 5xx; the failure behind it shows on the Worker's own subrequests, `source="edgeWorkerFetch"`, under the upstream host.
+
+Per-host latency comes from two more queries per poll over a trailing window ending now (`cloudflare.latency_window`, default 15m), client requests only: **origin latency** (how long the origin took to answer Cloudflare - the tunnel's health for a tunneled service), over requests an origin answered, and **edge time to first byte** (what visitors see), cache hits included. Each is a p50, p95, and p99 gauge per host. Quantiles cannot be split once computed, which is why they are separate queries with their own filters, and why they are gauges rather than counters.
 
 ### RUM / Web Analytics (`rumPageloadEventsAdaptiveGroups`, `rumWebVitalsEventsAdaptiveGroups`)
 
@@ -96,6 +98,8 @@ Exposed on the configured metrics listen address (default `:9101`).
 | `cflog_http_requests_total` | counter | `method`, `status`, `country`, `host`, `cache_status`, `source`, `zone` | Cumulative HTTP requests |
 | `cflog_http_origin_requests_total` | counter | `host`, `origin_status`, `status`, `source`, `zone` | Cumulative HTTP requests by origin status and edge status |
 | `cflog_http_bytes_total` | counter | `type`, `host`, `source`, `zone` | Cumulative edge response bytes |
+| `cflog_http_origin_latency_seconds` | gauge | `quantile`, `host`, `zone` | Origin response time p50/p95/p99 over the trailing latency window (client requests an origin answered) |
+| `cflog_http_edge_ttfb_seconds` | gauge | `quantile`, `host`, `zone` | Edge time to first byte p50/p95/p99 over the trailing latency window (client requests, cache hits included) |
 | `cflog_rum_pageviews_total` | counter | `country`, `device`, `host`, `site` | RUM page views (known bots excluded) |
 | `cflog_rum_sessions_total` | counter | `country`, `device`, `host`, `site` | RUM sessions (entry page loads, known bots excluded) |
 | `cflog_rum_web_vital_seconds` | gauge | `vital`, `device`, `host`, `site` | Core Web Vitals p75 in seconds (lcp, inp, fid, fcp, ttfb), real browsers only |
@@ -104,7 +108,7 @@ Exposed on the configured metrics listen address (default `:9101`).
 | `cflog_loki_push_duration_seconds` | histogram | | Loki push latency |
 | `cflog_build_info` | gauge | `version`, `go_version` | Build metadata |
 
-**Cardinality.** The HTTP series grow with the number of distinct label combinations a zone actually sees, not the product of every possible value. Measured over 24 hours on two Pro zones (3 and 13 hosts), `cflog_http_requests_total` produced 117 and 226 series, and `cflog_http_origin_requests_total` well under that. The RUM `host` label is bounded by the websites carrying the Web Analytics beacon (7 here), so RUM series stay at hosts x countries x devices seen. High-cardinality request detail (path, query, referer, client IP, user agent) stays in Loki and never becomes a label.
+**Cardinality.** The HTTP series grow with the number of distinct label combinations a zone actually sees, not the product of every possible value. Measured over 24 hours on two Pro zones (3 and 13 hosts), `cflog_http_requests_total` produced 117 and 226 series, and `cflog_http_origin_requests_total` well under that. Each latency gauge is at most 3 quantiles x the hosts with client traffic in the window (about 17 here). The RUM `host` label is bounded by the websites carrying the Web Analytics beacon (7 here), so RUM series stay at hosts x countries x devices seen. High-cardinality request detail (path, query, referer, client IP, user agent) stays in Loki and never becomes a label.
 
 ## Loki Streams
 
@@ -141,9 +145,11 @@ cloudflare:
       - site_tag: "${CF_RUM_SITE_TAG}" # Web Analytics site identifier
         name: "example.com"
     ingestion_lag: 10m                # Hold RUM page-load windows back from now (default: 10m)
+    vitals_window: 1h                 # Core Web Vitals p75 reach back this far (default: 1h)
   poll_interval: 5m                   # How often to poll (default: 5m)
   backfill_window: 1h                 # On startup, fetch this far back (default: 1h)
   ingestion_lag: 3m                   # Hold firewall/HTTP/audit windows back from now (default: 3m)
+  latency_window: 15m                 # HTTP latency quantiles reach back this far (default: 15m)
 
 loki:
   endpoint: "http://loki:3100"        # Loki push API base URL
@@ -259,7 +265,7 @@ make clean                  # remove build artifacts
 |   |   |-- client_test.go, rum_test.go, transport_test.go
 |   |-- collector/
 |   |   |-- base.go                   # Shared config, identity, poll loop, poll window, metrics
-|   |   |-- poll.go                   # Cursor-based poll template every cursor poller uses
+|   |   |-- poll.go                   # Cursor-based and trailing-window poll templates
 |   |   |-- shipping.go               # Ship to Loki, then commit the poll window
 |   |   |-- firewall.go               # Firewall event poller
 |   |   |-- http.go                   # HTTP traffic poller, counters
@@ -314,7 +320,7 @@ Both the Cloudflare and Loki clients automatically retry on transient failures (
 
 A poll window is only committed - counted into Prometheus and its cursor advanced - after Loki has accepted every batch. If a push fails, the window is re-queried on the next poll and counted exactly once when that push succeeds.
 
-Cloudflare ingests analytics with a processing delay, so each cursor-based poll reads up to `now - ingestion_lag` rather than `now`; otherwise data that lands after its window was polled would be skipped for good. Zone data was measured at under two minutes behind, so `cloudflare.ingestion_lag` defaults to 3m; RUM lands later, so `web_analytics.ingestion_lag` defaults to 10m. RUM web vitals re-query a trailing window every poll and need no lag.
+Cloudflare ingests analytics with a processing delay, so each cursor-based poll reads up to `now - ingestion_lag` rather than `now`; otherwise data that lands after its window was polled would be skipped for good. Zone data was measured at under two minutes behind, so `cloudflare.ingestion_lag` defaults to 3m; RUM lands later, so `web_analytics.ingestion_lag` defaults to 10m. The quantile polls - HTTP latency and RUM web vitals - re-query a trailing window every poll, so late data heals itself and they need no lag.
 
 ## License
 

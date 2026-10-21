@@ -107,7 +107,7 @@ func TestManager_StartsServices(t *testing.T) {
 		close(done)
 	}()
 
-	// --- Wait for services to start ---
+	// Wait for the services to start.
 	waitFor(t, func() bool { return svc1.started.Load() && svc2.started.Load() })
 
 	cancel()
@@ -157,7 +157,7 @@ func TestManager_RecoversPanic(t *testing.T) {
 		close(done)
 	}()
 
-	// --- Wait for service to be restarted after panic ---
+	// Wait for the service to be restarted after the panic.
 	waitFor(t, func() bool { return svc.calls.Load() >= 2 })
 
 	cancel()
@@ -177,7 +177,7 @@ func TestManager_RestartsOnError(t *testing.T) {
 		close(done)
 	}()
 
-	// --- Wait for service to be restarted after error ---
+	// Wait for the service to be restarted after the error.
 	waitFor(t, func() bool { return svc.calls.Load() >= 2 })
 
 	cancel()

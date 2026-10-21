@@ -20,9 +20,9 @@ import (
 // POLL METRICS
 // -------------------------------------------------------------------------
 
-// The "zone" label identifies the polled scope. For the firewall and http
-// datasets it holds the zone name; for the audit dataset it holds the account
-// name, since audit logs are scoped per account rather than per zone.
+// The "zone" label identifies the polled scope: the zone name for the zone
+// datasets (firewall, HTTP traffic and latency), the account name for audit
+// logs, and the site name for the RUM datasets.
 
 // PollTotal counts poll attempts by dataset, zone, and status.
 var PollTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -86,6 +86,28 @@ var HTTPBytesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help: "Total HTTP response bytes observed via Cloudflare analytics by type, host, source, and zone",
 }, []string{"type", "host", "source", "zone"})
 
+// The HTTP latency gauges report per-host quantiles over the latest poll's
+// trailing window, for real clients only. Origin latency is how long the
+// origin took to answer Cloudflare - for tunneled services, the tunnel's
+// health - and covers only requests an origin answered. Edge time to first
+// byte is what clients see, cache hits included. They measure different
+// things, so they are separate metrics rather than one with a kind label that
+// would invite aggregating across both.
+
+// HTTPOriginLatencySeconds reports origin response time quantiles by quantile,
+// host, and zone.
+var HTTPOriginLatencySeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "cflog_http_origin_latency_seconds",
+	Help: "HTTP origin response time quantiles in seconds over the trailing window, by quantile, host, and zone (client requests answered by an origin)",
+}, []string{"quantile", "host", "zone"})
+
+// HTTPEdgeTTFBSeconds reports edge time-to-first-byte quantiles by quantile,
+// host, and zone.
+var HTTPEdgeTTFBSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "cflog_http_edge_ttfb_seconds",
+	Help: "HTTP edge time to first byte quantiles in seconds over the trailing window, by quantile, host, and zone (client requests, cache hits included)",
+}, []string{"quantile", "host", "zone"})
+
 // AuditEventsTotal counts audit log events by action type and account.
 var AuditEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "cflog_audit_events_total",
@@ -100,7 +122,7 @@ var AuditEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 // (country x device x host x site, hosts being the websites carrying the
 // beacon); the high-cardinality request path and referer are shipped to Loki
 // instead. Known bots are excluded from every RUM metric. The web-vital gauges
-// report the p75 over the latest poll's rolling window - quantiles cannot be
+// report the p75 over the latest poll's trailing window - quantiles cannot be
 // accumulated into a counter.
 
 // RUMPageviewsTotal counts browser-side page views by country, device, host,

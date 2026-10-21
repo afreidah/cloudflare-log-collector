@@ -7,7 +7,8 @@
 // so a change to a row struct or the query skeleton shows up as a reviewable
 // diff here. Also covers the selection builder's rules: fields named by JSON
 // tag, nested structs as sub-selections, and untagged, "-", and unexported
-// fields skipped.
+// fields skipped; and that each latency quantile set reads back as the right
+// percentiles.
 // -------------------------------------------------------------------------------
 
 package cloudflare
@@ -72,6 +73,46 @@ func TestDatasetQueries_Golden(t *testing.T) {
     }
   }
 }`},
+		"http origin latency": {httpOriginLatencyDataset.query, `query ($zoneId: String!, $since: String!, $until: String!, $limit: uint64!) {
+  viewer {
+    zones(filter: {zoneTag: $zoneId}) {
+      httpRequestsAdaptiveGroups(
+        filter: {datetime_gt: $since, datetime_leq: $until, requestSource: "eyeball", originResponseStatus_gt: 0}
+        limit: $limit
+      ) {
+        count
+        dimensions {
+          clientRequestHTTPHost
+        }
+        quantiles {
+          originResponseDurationMsP50
+          originResponseDurationMsP95
+          originResponseDurationMsP99
+        }
+      }
+    }
+  }
+}`},
+		"http edge latency": {httpEdgeLatencyDataset.query, `query ($zoneId: String!, $since: String!, $until: String!, $limit: uint64!) {
+  viewer {
+    zones(filter: {zoneTag: $zoneId}) {
+      httpRequestsAdaptiveGroups(
+        filter: {datetime_gt: $since, datetime_leq: $until, requestSource: "eyeball"}
+        limit: $limit
+      ) {
+        count
+        dimensions {
+          clientRequestHTTPHost
+        }
+        quantiles {
+          edgeTimeToFirstByteMsP50
+          edgeTimeToFirstByteMsP95
+          edgeTimeToFirstByteMsP99
+        }
+      }
+    }
+  }
+}`},
 		"rum pageloads": {rumPageloadDataset.query, `query ($accountId: String!, $siteTag: String!, $since: String!, $until: String!, $limit: uint64!) {
   viewer {
     accounts(filter: {accountTag: $accountId}) {
@@ -125,6 +166,18 @@ func TestDatasetQueries_Golden(t *testing.T) {
 	for name, tt := range tests {
 		if tt.got != tt.want {
 			t.Errorf("%s query:\n--- got ---\n%s\n--- want ---\n%s", name, tt.got, tt.want)
+		}
+	}
+}
+
+func TestLatencyQuantiles_Percentiles(t *testing.T) {
+	want := Percentiles{P50: 1, P95: 2, P99: 3}
+	for name, q := range map[string]LatencyQuantiles{
+		"origin": OriginLatencyQuantiles{OriginResponseDurationMsP50: 1, OriginResponseDurationMsP95: 2, OriginResponseDurationMsP99: 3},
+		"edge":   EdgeLatencyQuantiles{EdgeTimeToFirstByteMsP50: 1, EdgeTimeToFirstByteMsP95: 2, EdgeTimeToFirstByteMsP99: 3},
+	} {
+		if got := q.Percentiles(); got != want {
+			t.Errorf("%s Percentiles() = %+v, want %+v", name, got, want)
 		}
 	}
 }

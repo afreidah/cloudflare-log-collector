@@ -84,8 +84,8 @@ type RUMWebVitalsQuantiles struct {
 var rumPageloadDataset = newDataset[RUMPageloadGroup](datasetSpec{
 	field:   "rumPageloadEventsAdaptiveGroups",
 	scope:   accountScope,
-	vars:    []string{"siteTag"},
-	filters: []string{"siteTag: $siteTag"},
+	vars:    []string{siteTagVar},
+	filters: []string{siteFilter},
 	limit:   rumQueryLimit,
 })
 
@@ -95,21 +95,19 @@ var rumPageloadDataset = newDataset[RUMPageloadGroup](datasetSpec{
 var rumWebVitalsDataset = newDataset[RUMWebVitalsGroup](datasetSpec{
 	field:   "rumWebVitalsEventsAdaptiveGroups",
 	scope:   accountScope,
-	vars:    []string{"siteTag"},
-	filters: []string{"siteTag: $siteTag", "bot: 0"},
+	vars:    []string{siteTagVar},
+	filters: []string{siteFilter, "bot: 0"},
 	limit:   rumQueryLimit,
 })
 
 // QueryRUMPageloads fetches browser-side page-load groups for the given Web
 // Analytics site and time range.
 func (c *Client) QueryRUMPageloads(ctx context.Context, accountID, siteTag string, since, until time.Time) ([]RUMPageloadGroup, error) {
-	return queryDataset(ctx, c, rumPageloadDataset, siteTag, since, until,
-		map[string]any{"accountId": accountID, "siteTag": siteTag})
+	return querySite(ctx, c, rumPageloadDataset, accountID, siteTag, since, until)
 }
 
 // QueryRUMWebVitals fetches Core Web Vitals quantiles for the given Web
 // Analytics site and time range.
 func (c *Client) QueryRUMWebVitals(ctx context.Context, accountID, siteTag string, since, until time.Time) ([]RUMWebVitalsGroup, error) {
-	return queryDataset(ctx, c, rumWebVitalsDataset, siteTag, since, until,
-		map[string]any{"accountId": accountID, "siteTag": siteTag})
+	return querySite(ctx, c, rumWebVitalsDataset, accountID, siteTag, since, until)
 }

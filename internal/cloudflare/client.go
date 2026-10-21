@@ -3,12 +3,14 @@
 //
 // Authors: Alex Freidah, Aaron Florey
 //
-// Core client for the Cloudflare APIs: connection config and the single
-// retrying HTTP executor that every query builds on. Rate limiting is handled
-// by the shared retry policy (exponential backoff that honors Retry-After), and
-// the final HTTP status is recorded on the active trace span. The per-dataset
-// queries live in firewall.go, http.go, rum.go (GraphQL) and audit.go (REST);
-// the shared dataset query and GraphQL transport live in graphql.go.
+// Core client for the Cloudflare APIs: connection config, the client span and
+// authorization every request carries, and the single retrying HTTP executor
+// that every query builds on. Rate limiting is handled by the shared retry
+// policy (exponential backoff that honors Retry-After), the final HTTP status
+// is recorded on the active trace span, and any status other than 200 is an
+// error. The per-dataset queries live in firewall.go, http.go, rum.go (GraphQL)
+// and audit.go (REST); dataset queries are built in dataset.go and sent by the
+// GraphQL transport in graphql.go.
 // -------------------------------------------------------------------------------
 
 // Package cloudflare is a client for the Cloudflare GraphQL Analytics and REST
@@ -23,6 +25,7 @@ import (
 	"time"
 
 	"github.com/afreidah/cloudflare-log-collector/internal/retry"
+	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -30,10 +33,13 @@ import (
 
 // graphQLEndpoint is the Cloudflare Analytics GraphQL API URL. maxResponseBytes
 // caps the size of response bodies read from the API (10 MB) to guard against
-// unbounded memory allocation.
+// unbounded memory allocation. apiPeerService and apiHost name the API on
+// every client span.
 const (
 	graphQLEndpoint  = "https://api.cloudflare.com/client/v4/graphql"
 	maxResponseBytes = 10 << 20
+	apiPeerService   = "cloudflare-api"
+	apiHost          = "api.cloudflare.com"
 )
 
 // -------------------------------------------------------------------------
@@ -86,17 +92,39 @@ func NewTestClient(endpoint, apiToken string) *Client {
 // HTTP TRANSPORT
 // -------------------------------------------------------------------------
 
-// doWithRetry sends the request produced by buildReq under the client's retry
-// policy (see retry.Policy.Do). The request is rebuilt for every attempt so no
-// per-request state leaks across retries. The final HTTP status code is
-// recorded on the active span and returned alongside the response body for the
-// caller to interpret.
-func (c *Client) doWithRetry(ctx context.Context, buildReq func() (*http.Request, error)) ([]byte, int, error) {
+// apiErrors is the errors array both Cloudflare APIs return in a 200 response
+// that nonetheless failed.
+type apiErrors []struct {
+	Message string `json:"message"`
+}
+
+// err returns the first error, prefixed with which API reported it (e.g.
+// "graphql error: ..."), or nil when there are none.
+func (e apiErrors) err(api string) error {
+	if len(e) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s error: %s", api, e[0].Message)
+}
+
+// startAPISpan starts the client span for one Cloudflare API call, naming the
+// API as its peer.
+func startAPISpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	return telemetry.StartClientSpan(ctx, name, apiPeerService, apiHost, attrs...)
+}
+
+// doWithRetry sends the request produced by buildReq, authorized with the API
+// token, under the client's retry policy (see retry.Policy.Do). The request is
+// rebuilt for every attempt so no per-request state leaks across retries. The
+// final HTTP status code is recorded on the active span; any status other than
+// 200 is returned as an error carrying the response body.
+func (c *Client) doWithRetry(ctx context.Context, buildReq func() (*http.Request, error)) ([]byte, error) {
 	res, err := c.retryPolicy.Do(ctx, "Cloudflare API", func() (retry.Result, error) {
 		req, err := buildReq()
 		if err != nil {
 			return retry.Result{}, fmt.Errorf("create request: %w", err)
 		}
+		req.Header.Set("Authorization", "Bearer "+c.apiToken)
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
@@ -112,10 +140,13 @@ func (c *Client) doWithRetry(ctx context.Context, buildReq func() (*http.Request
 		return retry.Result{StatusCode: resp.StatusCode, Header: resp.Header, Body: body}, nil
 	})
 	if err != nil {
-		return nil, res.StatusCode, err
+		return nil, err
 	}
 
 	trace.SpanFromContext(ctx).SetAttributes(attribute.Int("http.status_code", res.StatusCode))
 
-	return res.Body, res.StatusCode, nil
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d: %s", res.StatusCode, string(res.Body))
+	}
+	return res.Body, nil
 }

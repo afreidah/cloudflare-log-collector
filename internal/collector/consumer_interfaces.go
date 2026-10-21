@@ -29,9 +29,12 @@ type firewallQuerier interface {
 	QueryFirewallEvents(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.FirewallEvent, error)
 }
 
-// httpQuerier is the HTTP collector's view of the Cloudflare client.
+// httpQuerier is the HTTP collector's view of the Cloudflare client: traffic
+// for the counters, and the two per-host latency distributions.
 type httpQuerier interface {
 	QueryHTTPRequests(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPRequestGroup, error)
+	QueryHTTPOriginLatency(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPLatencyGroup[cloudflare.OriginLatencyQuantiles], error)
+	QueryHTTPEdgeLatency(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPLatencyGroup[cloudflare.EdgeLatencyQuantiles], error)
 }
 
 // auditQuerier is the audit collector's view of the Cloudflare client.
@@ -48,8 +51,8 @@ type rumQuerier interface {
 }
 
 // cloudflareQuerier composes the two zone-scoped queriers for the shared
-// CollectorConfig that the firewall and HTTP collectors both build from. Each
-// collector narrows it to the single query method it actually calls.
+// ZoneCollectorConfig that the firewall and HTTP collectors both build from.
+// Each collector narrows it to the query methods it actually calls.
 type cloudflareQuerier interface {
 	firewallQuerier
 	httpQuerier

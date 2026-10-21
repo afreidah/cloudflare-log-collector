@@ -13,6 +13,7 @@
 package main
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -41,24 +42,9 @@ func testConfig(auditEnabled bool) *config.Config {
 	return cfg
 }
 
-func names(planned []namedRunner) []string {
-	out := make([]string, len(planned))
-	for i, p := range planned {
-		out[i] = p.name
-	}
-	return out
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+// registrationNames returns the planned registration names, in order.
+func registrationNames(planned []namedRunner) []string {
+	return names(planned, func(p namedRunner) string { return p.name })
 }
 
 func TestPlannedCollectors_ZonesOnly(t *testing.T) {
@@ -71,7 +57,7 @@ func TestPlannedCollectors_ZonesOnly(t *testing.T) {
 		"firewall-example.com", "http-example.com",
 		"firewall-example.org", "http-example.org",
 	}
-	if got := names(planned); !equalStrings(got, want) {
+	if got := registrationNames(planned); !slices.Equal(got, want) {
 		t.Errorf("registration names = %v, want %v", got, want)
 	}
 	for _, p := range planned {
@@ -92,7 +78,7 @@ func TestPlannedCollectors_WithAudit(t *testing.T) {
 		"firewall-example.org", "http-example.org",
 		"audit-acme",
 	}
-	if got := names(planned); !equalStrings(got, want) {
+	if got := registrationNames(planned); !slices.Equal(got, want) {
 		t.Errorf("registration names = %v, want %v", got, want)
 	}
 }
@@ -117,7 +103,7 @@ func TestPlannedCollectors_AuditDisabledSkipsAccounts(t *testing.T) {
 func TestCollectorNames_ZonesOnly(t *testing.T) {
 	zones, accounts, sites := collectorNames(testConfig(false))
 
-	if want := []string{"example.com", "example.org"}; !equalStrings(zones, want) {
+	if want := []string{"example.com", "example.org"}; !slices.Equal(zones, want) {
 		t.Errorf("zone names = %v, want %v", zones, want)
 	}
 	if len(accounts) != 0 {
@@ -131,10 +117,10 @@ func TestCollectorNames_ZonesOnly(t *testing.T) {
 func TestCollectorNames_WithAudit(t *testing.T) {
 	zones, accounts, _ := collectorNames(testConfig(true))
 
-	if want := []string{"example.com", "example.org"}; !equalStrings(zones, want) {
+	if want := []string{"example.com", "example.org"}; !slices.Equal(zones, want) {
 		t.Errorf("zone names = %v, want %v", zones, want)
 	}
-	if want := []string{"acme"}; !equalStrings(accounts, want) {
+	if want := []string{"acme"}; !slices.Equal(accounts, want) {
 		t.Errorf("account names = %v, want %v", accounts, want)
 	}
 }
@@ -165,7 +151,7 @@ func TestPlannedCollectors_WithWebAnalytics(t *testing.T) {
 		"firewall-example.org", "http-example.org",
 		"rum-example.com", "rum-example.org",
 	}
-	if got := names(planned); !equalStrings(got, want) {
+	if got := registrationNames(planned); !slices.Equal(got, want) {
 		t.Errorf("registration names = %v, want %v", got, want)
 	}
 }
@@ -186,7 +172,7 @@ func TestPlannedCollectors_WebAnalyticsDisabledSkipsSites(t *testing.T) {
 func TestCollectorNames_WithWebAnalytics(t *testing.T) {
 	_, _, sites := collectorNames(withWebAnalytics())
 
-	if want := []string{"example.com", "example.org"}; !equalStrings(sites, want) {
+	if want := []string{"example.com", "example.org"}; !slices.Equal(sites, want) {
 		t.Errorf("site names = %v, want %v", sites, want)
 	}
 }

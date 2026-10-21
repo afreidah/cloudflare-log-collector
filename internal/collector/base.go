@@ -5,13 +5,13 @@
 //
 // What every collector shares, whatever it polls. CommonConfig is the settings
 // half: the Loki client and batch size it ships with, its poll schedule, and
-// its ingestion lag, built by main.go and handed to every collector. base is
-// the run-time half each collector embeds: those settings plus the collector's
-// identity (its display name, the zone/account/site it polls, and its Loki
-// stream), and the behavior that follows from them - scheduling polls, sizing
-// their windows, recording their outcome, and labeling data metrics with the
-// scope. Collectors keep only what is theirs: a querier, their IDs, and their
-// cursor state.
+// its ingestion lag and trailing window, built by main.go and handed to every
+// collector. base is the run-time half each collector embeds: those settings
+// plus the collector's identity (its display name, the zone/account/site it
+// polls, and its Loki stream), and the behavior that follows from them -
+// scheduling polls, sizing their windows, recording their outcome, and
+// labeling data metrics with the scope. Collectors keep only what is theirs: a
+// querier, their IDs, and their cursor state.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -37,13 +37,16 @@ import (
 // consumer-declared interface, not a concrete pointer, so the composition root
 // (main.go) passes the real *loki.Client while tests substitute fakes.
 // IngestionLag holds a cursor-based poll's window end back from now so
-// Cloudflare has finished ingesting the window before it is read; it differs
-// by dataset, so main.go sets it per collector.
+// Cloudflare has finished ingesting the window before it is read.
+// TrailingWindow is how far back a trailing poll's quantiles reach; only
+// collectors with trailing polls (HTTP latency, RUM web vitals) use it. Both
+// differ by dataset, so main.go sets them per collector.
 type CommonConfig struct {
 	Loki           logPusher
 	PollInterval   time.Duration
 	BackfillWindow time.Duration
 	IngestionLag   time.Duration
+	TrailingWindow time.Duration
 	BatchSize      int
 }
 
@@ -77,6 +80,7 @@ type base struct {
 	pollInterval   time.Duration
 	backfillWindow time.Duration
 	ingestionLag   time.Duration
+	trailingWindow time.Duration
 	labels         map[string]string
 }
 
@@ -90,6 +94,7 @@ func newBase(cfg CommonConfig, id identity) base {
 		pollInterval:   cfg.PollInterval,
 		backfillWindow: cfg.BackfillWindow,
 		ingestionLag:   cfg.IngestionLag,
+		trailingWindow: cfg.TrailingWindow,
 		labels: map[string]string{
 			"job":       "cloudflare",
 			"type":      id.stream,
@@ -141,7 +146,7 @@ func (b *base) run(ctx context.Context, backfillFrom time.Time, poll func(contex
 		"backfill_from", backfillFrom.Format(time.RFC3339),
 	)
 
-	// --- Initial poll on startup ---
+	// Initial poll on startup.
 	poll(ctx)
 
 	ticker := time.NewTicker(b.pollInterval)
@@ -193,6 +198,18 @@ func (b *base) add(counter *prometheus.CounterVec, n float64, labels ...string) 
 // set sets gauge's series for labels plus the scope to v.
 func (b *base) set(gauge *prometheus.GaugeVec, v float64, labels ...string) {
 	gauge.WithLabelValues(append(labels, b.scope)...).Set(v)
+}
+
+// setDuration sets gauge's series for labels plus the scope to raw, a
+// duration Cloudflare reports in unit (e.g. time.Millisecond), converted to
+// seconds. A negative raw is Cloudflare's "no data" sentinel (e.g. no
+// first-input delay when there was no interaction) and is skipped, so it never
+// shows up as a real 0.
+func (b *base) setDuration(gauge *prometheus.GaugeVec, raw float64, unit time.Duration, labels ...string) {
+	if raw < 0 {
+		return
+	}
+	b.set(gauge, raw/float64(time.Second/unit), labels...)
 }
 
 // clear deletes every series of gauge in this collector's scope, so a gauge

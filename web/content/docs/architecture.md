@@ -89,9 +89,9 @@ document.addEventListener('DOMContentLoaded', function() {
     'CF':      { title: 'Cloudflare API', detail: 'Zone-scoped GraphQL Analytics (firewallEventsAdaptive, httpRequestsAdaptiveGroups), account-scoped GraphQL RUM (rumPageloadEventsAdaptiveGroups, rumWebVitalsEventsAdaptiveGroups), and the REST Audit Logs API. Free plan supports ~24h lookback. Rate limit: 300 queries per 5 minutes.' },
     'POLL':    { title: 'Poll Scheduler', detail: 'Triggers collection on a configurable interval (default 5m). On startup, backfills up to the configured window (default 1h). Each enabled collector is supervised independently with panic recovery and restart, and wraps its poll in an OpenTelemetry trace.' },
     'FW':      { title: 'Firewall Collector', detail: 'Per zone. Queries firewallEventsAdaptive for individual WAF events. Captures action, client IP, host, method, path, query, ray ID, rule ID, source, user agent, and country. Warns if results hit the 10,000 event cap.' },
-    'HTTP':    { title: 'HTTP Collector', detail: 'Per zone. Queries httpRequestsAdaptiveGroups for aggregated traffic stats grouped by method, status code, and country. Adds to cumulative Prometheus counters and pushes raw data to Loki. Warns at the 5,000 group cap.' },
+    'HTTP':    { title: 'HTTP Collector', detail: 'Per zone. Queries httpRequestsAdaptiveGroups for aggregated traffic stats grouped per minute by host, method, edge and origin status, cache status, request source, and country. Adds to cumulative Prometheus counters and pushes raw data to Loki. Also reports per-host origin latency and edge time to first byte as quantile gauges over a trailing window. Warns at the group cap.' },
     'AUDIT':   { title: 'Audit Collector', detail: 'Per account (optional). Queries the REST Audit Logs API for account audit events with cursor pagination, deduping the inclusive since-boundary by event ID. Ships each event to Loki and counts events by action type.' },
-    'RUM':     { title: 'RUM Collector', detail: 'Per Web Analytics site (optional). Browser-side Real User Monitoring: page views and sessions become Loki rows and bounded counters (advancing cursor, counted once); Core Web Vitals (LCP, INP, FID, FCP, TTFB, CLS) p75 are gauges over a rolling window. Account-scoped, filtered by site tag; needs Account Analytics Read.' },
+    'RUM':     { title: 'RUM Collector', detail: 'Per Web Analytics site (optional). Browser-side Real User Monitoring: page views and sessions become Loki rows and bounded counters (advancing cursor, counted once); Core Web Vitals (LCP, INP, FID, FCP, TTFB, CLS) p75 per host are gauges over a trailing window. Known bots are left out of the metrics. Account-scoped, filtered by site tag; needs Account Analytics Read.' },
     'METRICS': { title: 'Metrics Exporter', detail: 'Exposes Prometheus metric families on the configured port (default :9101): poll health (counters, histograms, timestamps), firewall and audit event counts by action, HTTP request and byte counters, RUM page views and sessions, RUM Core Web Vitals gauges, Loki push status, and build info.' },
     'LOKIC':   { title: 'Loki Client', detail: 'Pushes structured JSON log lines to Loki\'s push API. Supports configurable batch size (default 100), multi-tenant X-Scope-OrgID header, and automatic retry with exponential backoff on transient failures (429, 502, 503, 504).' },
     'TRACE':   { title: 'Trace Context', detail: 'OpenTelemetry tracer exporting spans via OTLP gRPC to Tempo. Each poll cycle creates a root span with child spans for every API call, data transformation, and Loki push. Configurable sampling rate.' },
@@ -155,7 +155,8 @@ document.addEventListener('DOMContentLoaded', function() {
 ### HTTP Traffic
 
 - Aggregated groups are pushed to Loki under `{job="cloudflare", type="http_traffic"}` as JSON
-- Request and edge-byte totals are accumulated into **cumulative Prometheus counters** labeled by method, status code, and country, so dashboards derive rates with `rate()` and stay immune to poll-window length
+- Request and edge-byte totals are accumulated into **cumulative Prometheus counters** labeled by host, method, edge and origin status, cache status, request source, and country, so dashboards derive rates with `rate()` and stay immune to poll-window length
+- Per-host **origin latency** and **edge time to first byte** (p50, p95, p99) are **Prometheus gauges** over a trailing window ending now (`cloudflare.latency_window`), client requests only. Origin latency covers requests an origin answered - for a tunneled service it is the tunnel's health - and edge time to first byte includes cache hits. Quantiles cannot be accumulated, so each poll re-queries the window
 
 ### Audit Events
 
@@ -166,8 +167,8 @@ document.addEventListener('DOMContentLoaded', function() {
 ### RUM / Web Analytics
 
 - Browser-side data is **account-scoped** and identified by a Web Analytics **site tag** (Web Analytics must be enabled on the zone; the token needs Account Analytics Read)
-- **Page loads** advance a seek cursor and ship raw rows to Loki under `{job="cloudflare", type="rum_pageload"}`; bounded page-view and session **counters** (by country and device) are incremented only after a successful ship, so a page view is counted exactly once
-- **Core Web Vitals** (LCP, INP, FID, FCP, TTFB) p75 are exposed as **Prometheus gauges** in seconds; CLS is a unitless score on its own gauge. Because quantiles cannot be accumulated, each poll reports the p75 over a fixed rolling window. The API's `-1` "no data" sentinel is dropped rather than emitted as a zero
+- **Page loads** advance a seek cursor and ship raw rows to Loki under `{job="cloudflare", type="rum_pageload"}`; bounded page-view and session **counters** (by country, device, and host) are incremented only after a successful ship, so a page view is counted exactly once; known-bot page loads ship to Loki but are not counted
+- **Core Web Vitals** (LCP, INP, FID, FCP, TTFB) p75 per host and device are exposed as **Prometheus gauges** in seconds, over real browsers only; CLS is a unitless score on its own gauge. Because quantiles cannot be accumulated, each poll reports the p75 over a trailing window (`web_analytics.vitals_window`). The API's `-1` "no data" sentinel is dropped rather than emitted as a zero
 
 ### Observability
 
