@@ -3,6 +3,14 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.26](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.25...v0.1.26) (2026-10-24)
+
+
+### Features
+
+* DNS analytics collector and unique client IPs per zone ([#122](https://github.com/afreidah/cloudflare-log-collector/issues/122)) ([666e342](https://github.com/afreidah/cloudflare-log-collector/commit/666e342c763199d83803eae4a14a82075dedcd16)), closes [#105](https://github.com/afreidah/cloudflare-log-collector/issues/105) [#107](https://github.com/afreidah/cloudflare-log-collector/issues/107)
+* **http:** count visits per host from HTTP analytics ([#124](https://github.com/afreidah/cloudflare-log-collector/issues/124)) ([e913820](https://github.com/afreidah/cloudflare-log-collector/commit/e913820f354e7eead74ff014330f9b6fb9613e70)), closes [#121](https://github.com/afreidah/cloudflare-log-collector/issues/121)
+
 ## [0.1.25](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.24...v0.1.25) (2026-10-21)
 
 
