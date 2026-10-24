@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -47,6 +48,7 @@ type CloudflareConfig struct {
 	AuditLogs      AuditLogsConfig    `yaml:"audit_logs"`
 	WebAnalytics   WebAnalyticsConfig `yaml:"web_analytics"`
 	DNS            DNSConfig          `yaml:"dns"`
+	HTTPVisits     HTTPVisitsConfig   `yaml:"http_visits"`
 	PollInterval   time.Duration      `yaml:"poll_interval"`
 	BackfillWindow time.Duration      `yaml:"backfill_window"`
 	IngestionLag   time.Duration      `yaml:"ingestion_lag"`
@@ -86,16 +88,36 @@ type WebAnalyticsConfig struct {
 	VitalsWindow time.Duration `yaml:"vitals_window"`
 }
 
-// DNSConfig holds authoritative DNS analytics settings. Collection runs for
-// every zone unless Enabled is set to false; unset means on.
-type DNSConfig struct {
+// DefaultOn is a collection switch that is on unless enabled is set to false;
+// unset means on.
+type DefaultOn struct {
 	Enabled *bool `yaml:"enabled"`
 }
 
-// On reports whether DNS analytics are collected.
-func (d DNSConfig) On() bool {
+// On reports whether the collection is enabled.
+func (d DefaultOn) On() bool {
 	return d.Enabled == nil || *d.Enabled
 }
+
+// DNSConfig holds authoritative DNS analytics settings. Collection runs for
+// every zone unless disabled.
+type DNSConfig struct {
+	DefaultOn `yaml:",inline"`
+}
+
+// HTTPVisitsConfig holds server-side visit counting settings. Collection runs
+// for every zone unless disabled. ExcludeUserAgents are user agent patterns
+// whose visits are not counted, in the API's like syntax (% matches any run of
+// characters); unset means DefaultExcludeUserAgents, and an empty list
+// excludes nothing.
+type HTTPVisitsConfig struct {
+	DefaultOn         `yaml:",inline"`
+	ExcludeUserAgents []string `yaml:"exclude_user_agents"`
+}
+
+// DefaultExcludeUserAgents leaves out user agents that identify themselves as
+// bots, crawlers, or spiders.
+var DefaultExcludeUserAgents = []string{"%bot%", "%Bot%", "%crawler%", "%spider%"}
 
 // SiteConfig identifies a single Web Analytics site to collect RUM data from.
 type SiteConfig struct {
@@ -181,6 +203,9 @@ func (c *Config) applyDefaults() {
 	if c.Cloudflare.LatencyWindow == 0 {
 		c.Cloudflare.LatencyWindow = 15 * time.Minute
 	}
+	if c.Cloudflare.HTTPVisits.ExcludeUserAgents == nil {
+		c.Cloudflare.HTTPVisits.ExcludeUserAgents = slices.Clone(DefaultExcludeUserAgents)
+	}
 	if c.Cloudflare.WebAnalytics.IngestionLag == 0 {
 		c.Cloudflare.WebAnalytics.IngestionLag = 10 * time.Minute
 	}
@@ -211,6 +236,7 @@ func (c *Config) validate() error {
 	errs = append(errs, c.validateCloudflare()...)
 	errs = append(errs, c.validateAuditLogs()...)
 	errs = append(errs, c.validateWebAnalytics()...)
+	errs = append(errs, c.validateHTTPVisits()...)
 	if c.Loki.Endpoint == "" {
 		errs = append(errs, fmt.Errorf("loki.endpoint is required"))
 	}
@@ -268,6 +294,22 @@ func (c *Config) validateWebAnalytics() []error {
 	})...)
 	errs = append(errs, c.validateLag("cloudflare.web_analytics.ingestion_lag", c.Cloudflare.WebAnalytics.IngestionLag)...)
 	errs = append(errs, notNegative("cloudflare.web_analytics.vitals_window", c.Cloudflare.WebAnalytics.VitalsWindow)...)
+	return errs
+}
+
+// validateHTTPVisits checks the excluded user agent patterns when visits are
+// collected. An empty pattern is rejected: it would exclude only requests with
+// no user agent, which is never what was meant.
+func (c *Config) validateHTTPVisits() []error {
+	if !c.Cloudflare.HTTPVisits.On() {
+		return nil
+	}
+	var errs []error
+	for i, pattern := range c.Cloudflare.HTTPVisits.ExcludeUserAgents {
+		if pattern == "" {
+			errs = append(errs, fmt.Errorf("cloudflare.http_visits.exclude_user_agents[%d] must not be empty", i))
+		}
+	}
 	return errs
 }
 

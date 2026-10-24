@@ -33,6 +33,17 @@ cloudflare:
   # Authoritative DNS analytics for every zone (on by default).
   dns:
     enabled: true
+  # Server-side visits per host for every zone (on by default), counted at the
+  # edge with no browser beacon. Visits from user agents matching a pattern
+  # (% matches any run of characters) are not counted; a list set here replaces
+  # the default below, so add your own monitors' user agents alongside it.
+  http_visits:
+    enabled: true
+    exclude_user_agents:
+      - "%bot%"
+      - "%Bot%"
+      - "%crawler%"
+      - "%spider%"
   poll_interval: 5m
   backfill_window: 1h
   # Hold firewall, HTTP, and audit poll windows back from now so Cloudflare has

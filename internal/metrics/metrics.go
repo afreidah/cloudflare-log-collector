@@ -115,6 +115,14 @@ var HTTPUniqueIPs = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Help: "Distinct client IPs in the last complete hour (window=1h) or UTC day (window=1d); counts IPs, not people",
 }, []string{"window", "zone"})
 
+// HTTPVisitsTotal counts visits by host and zone: Cloudflare's server-side
+// count of page views that start at the site, from real clients, with the
+// configured user agents excluded. It needs no browser beacon.
+var HTTPVisitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "cflog_http_visits_total",
+	Help: "Total visits observed via Cloudflare HTTP analytics by host and zone (client requests, excluded user agents left out)",
+}, []string{"host", "zone"})
+
 // AuditEventsTotal counts audit log events by action type and account.
 var AuditEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "cflog_audit_events_total",

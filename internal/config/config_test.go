@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -169,16 +170,69 @@ func TestDefaults_LagsAndWindows(t *testing.T) {
 	}
 }
 
-func TestDNSConfig_OnUnlessDisabled(t *testing.T) {
+func TestDefaultOn_OnUnlessDisabled(t *testing.T) {
 	on, off := true, false
 	for _, tt := range []struct {
 		name    string
 		enabled *bool
 		want    bool
 	}{{"unset", nil, true}, {"true", &on, true}, {"false", &off, false}} {
-		if got := (DNSConfig{Enabled: tt.enabled}).On(); got != tt.want {
+		if got := (DefaultOn{Enabled: tt.enabled}).On(); got != tt.want {
 			t.Errorf("%s: On() = %v, want %v", tt.name, got, tt.want)
 		}
+	}
+}
+
+func TestLoadConfig_HTTPVisits(t *testing.T) {
+	base := `
+cloudflare:
+  api_token: "tok"
+  zones:
+    - id: "zid"
+      name: "example.com"
+loki:
+  endpoint: "http://localhost:3100"
+`
+	for _, tt := range []struct {
+		name     string
+		visits   string
+		wantOn   bool
+		excludes []string
+	}{
+		{"unset uses the defaults", "", true, DefaultExcludeUserAgents},
+		{"a list replaces the defaults", "  http_visits:\n    exclude_user_agents: [\"Monitor%\"]\n", true, []string{"Monitor%"}},
+		{"an empty list excludes nothing", "  http_visits:\n    exclude_user_agents: []\n", true, []string{}},
+		{"disabled", "  http_visits:\n    enabled: false\n", false, DefaultExcludeUserAgents},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			content := strings.Replace(base, "loki:", tt.visits+"loki:", 1)
+			cfg, err := LoadConfig(writeConfigFile(t, content))
+			if err != nil {
+				t.Fatalf("LoadConfig() error = %v", err)
+			}
+			v := cfg.Cloudflare.HTTPVisits
+			if v.On() != tt.wantOn {
+				t.Errorf("On() = %v, want %v", v.On(), tt.wantOn)
+			}
+			if !slices.Equal(v.ExcludeUserAgents, tt.excludes) || v.ExcludeUserAgents == nil {
+				t.Errorf("exclude_user_agents = %#v, want %#v", v.ExcludeUserAgents, tt.excludes)
+			}
+		})
+	}
+}
+
+func TestValidation_HTTPVisitsEmptyPattern(t *testing.T) {
+	cfg := validConfig()
+	cfg.Cloudflare.HTTPVisits.ExcludeUserAgents = []string{"%bot%", ""}
+	err := cfg.setDefaultsAndValidate()
+	if err == nil || !strings.Contains(err.Error(), "cloudflare.http_visits.exclude_user_agents[1] must not be empty") {
+		t.Fatalf("error = %v, want the empty pattern reported by index", err)
+	}
+
+	off := false
+	cfg.Cloudflare.HTTPVisits.Enabled = &off
+	if err := cfg.setDefaultsAndValidate(); err != nil {
+		t.Errorf("disabled visits: error = %v, want the patterns ignored", err)
 	}
 }
 

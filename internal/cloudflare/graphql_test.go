@@ -55,6 +55,7 @@ type datasetCase struct {
 
 func datasetCases() []datasetCase {
 	ctx := context.Background()
+	visitsQuery := NewHTTPVisitsQuery([]string{"%bot%", "Monitor%"})
 	return []datasetCase{
 		{
 			name: "firewall",
@@ -137,6 +138,17 @@ func datasetCases() []datasetCase {
 			}}},
 			call: func(c *Client, since, until time.Time) (any, error) {
 				return c.QueryDNSProcessingTime(ctx, "zone1", since, until)
+			},
+		},
+		{
+			name: "http visits",
+			info: visitsQuery.ds.datasetInfo,
+			vars: map[string]any{"zoneId": "zone1", "excludeUserAgent0": "%bot%", "excludeUserAgent1": "Monitor%"},
+			rows: []HTTPVisitsGroup{{Dimensions: HTTPVisitsDimensions{
+				DatetimeMinute: "2026-03-13T10:00:00Z", ClientRequestHTTPHost: "s3-orchestrator.munchbox.cc",
+			}, Sum: HTTPVisitsSum{Visits: 7}}},
+			call: func(c *Client, since, until time.Time) (any, error) {
+				return c.QueryHTTPVisits(ctx, visitsQuery, "zone1", since, until)
 			},
 		},
 		{

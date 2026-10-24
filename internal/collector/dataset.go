@@ -16,11 +16,13 @@ package collector
 type Dataset string
 
 // The datasets the collectors poll, one per poll; each labels its poll's
-// metrics and span. DatasetFirewall, DatasetHTTP, DatasetDNS, DatasetAudit,
-// and DatasetRUM also name their collectors' lifecycle registrations.
+// metrics and span. DatasetFirewall, DatasetHTTP, DatasetHTTPVisits,
+// DatasetDNS, DatasetAudit, and DatasetRUM also name their collectors'
+// lifecycle registrations.
 const (
 	DatasetFirewall            Dataset = "firewall"
 	DatasetHTTP                Dataset = "http"
+	DatasetHTTPVisits          Dataset = "http_visits"
 	DatasetHTTPOriginLatency   Dataset = "http_origin_latency"
 	DatasetHTTPEdgeLatency     Dataset = "http_edge_latency"
 	DatasetHTTPUniqueIPsHourly Dataset = "http_unique_ips_1h"
