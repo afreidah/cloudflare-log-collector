@@ -40,6 +40,11 @@ type httpQuerier interface {
 	QueryHTTPUniqueIPsDaily(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPUniqueIPsGroup, error)
 }
 
+// visitsQuerier is the visits collector's view of the Cloudflare client.
+type visitsQuerier interface {
+	QueryHTTPVisits(ctx context.Context, q cloudflare.HTTPVisitsQuery, zoneID string, since, until time.Time) ([]cloudflare.HTTPVisitsGroup, error)
+}
+
 // dnsQuerier is the DNS collector's view of the Cloudflare client: query
 // groups for the counters, and the zone's processing time distribution.
 type dnsQuerier interface {
@@ -61,11 +66,12 @@ type rumQuerier interface {
 }
 
 // cloudflareQuerier composes the zone-scoped queriers for the shared
-// ZoneCollectorConfig that the firewall, HTTP, and DNS collectors all build
-// from. Each collector narrows it to the query methods it actually calls.
+// ZoneCollectorConfig that the firewall, HTTP, visits, and DNS collectors all
+// build from. Each collector narrows it to the query methods it actually calls.
 type cloudflareQuerier interface {
 	firewallQuerier
 	httpQuerier
+	visitsQuerier
 	dnsQuerier
 }
 

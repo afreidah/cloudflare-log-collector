@@ -183,11 +183,11 @@ func newNamedRunner(dataset collector.Dataset, scope string, runner lifecycle.Ru
 }
 
 // plannedCollectors builds the full ordered set of collector registrations from
-// config: a firewall, HTTP, and (unless disabled) DNS collector per zone, plus
-// an audit collector per account and a RUM collector per site when those are
-// enabled. Keeping the plan
-// a pure function of config and clients lets tests assert the registration set
-// without standing up a lifecycle manager.
+// config: a firewall and HTTP collector per zone, with visits and DNS
+// collectors unless disabled, plus an audit collector per account and a RUM
+// collector per site when those are enabled. Keeping the plan a pure function
+// of config and clients lets tests assert the registration set without
+// standing up a lifecycle manager.
 func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Client) []namedRunner {
 	var planned []namedRunner
 
@@ -207,6 +207,9 @@ func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Clien
 	rumCommon.IngestionLag = cfg.Cloudflare.WebAnalytics.IngestionLag
 	rumCommon.TrailingWindow = cfg.Cloudflare.WebAnalytics.VitalsWindow
 
+	// Every zone runs the same visits query, so it is built once.
+	visitsQuery := cloudflare.NewHTTPVisitsQuery(cfg.Cloudflare.HTTPVisits.ExcludeUserAgents)
+
 	for _, zone := range cfg.Cloudflare.Zones {
 		cc := collector.ZoneCollectorConfig{
 			CommonConfig: zoneCommon,
@@ -219,6 +222,9 @@ func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Clien
 			newNamedRunner(collector.DatasetFirewall, zone.Name, collector.NewFirewallCollector(cc)),
 			newNamedRunner(collector.DatasetHTTP, zone.Name, collector.NewHTTPCollector(cc)),
 		)
+		if cfg.Cloudflare.HTTPVisits.On() {
+			planned = append(planned, newNamedRunner(collector.DatasetHTTPVisits, zone.Name, collector.NewVisitsCollector(cc, visitsQuery)))
+		}
 		if cfg.Cloudflare.DNS.On() {
 			planned = append(planned, newNamedRunner(collector.DatasetDNS, zone.Name, collector.NewDNSCollector(cc)))
 		}

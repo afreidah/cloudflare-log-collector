@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -49,6 +50,7 @@ func TestCollectors_IdentityAndCursorStart(t *testing.T) {
 	push := &fakePusher{}
 	firewall := NewFirewallCollector(zoneTestConfig(&fakeCloudflare{}, push))
 	httpc := NewHTTPCollector(zoneTestConfig(&fakeCloudflare{}, push))
+	visits := NewVisitsCollector(zoneTestConfig(&fakeCloudflare{}, push), cloudflare.NewHTTPVisitsQuery(nil))
 	dns := NewDNSCollector(zoneTestConfig(&fakeCloudflare{}, push))
 	audit := NewAuditCollector(auditTestConfig(&fakeCloudflare{}, push))
 	rum := NewRUMCollector(rumTestConfig(&fakeRUMQuerier{}, push))
@@ -60,11 +62,12 @@ func TestCollectors_IdentityAndCursorStart(t *testing.T) {
 	}{
 		{"firewall", map[string]string{"job": "cloudflare", "type": "firewall", "zone": "example.com"}, firewall.lastSeen},
 		{"http", map[string]string{"job": "cloudflare", "type": "http_traffic", "zone": "example.com"}, httpc.lastSeen},
+		{"visits", map[string]string{"job": "cloudflare", "type": "http_visits", "zone": "example.com"}, visits.lastSeen},
 		{"dns", map[string]string{"job": "cloudflare", "type": "dns", "zone": "example.com"}, dns.lastSeen},
 		{"audit", map[string]string{"job": "cloudflare", "type": "audit", "account": "acme"}, audit.lastSeen},
 		{"rum", map[string]string{"job": "cloudflare", "type": "rum_pageload", "site": "example.com"}, rum.pageloadSeen},
 	}
-	got := map[string]map[string]string{"firewall": firewall.labels, "http": httpc.labels, "dns": dns.labels, "audit": audit.labels, "rum": rum.labels}
+	got := map[string]map[string]string{"firewall": firewall.labels, "http": httpc.labels, "visits": visits.labels, "dns": dns.labels, "audit": audit.labels, "rum": rum.labels}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -107,6 +110,7 @@ func TestCollectors_RunPollsThenStops(t *testing.T) {
 	runs := map[string]func(context.Context) error{
 		"firewall": NewFirewallCollector(zoneTestConfig(zone, push)).Run,
 		"http":     NewHTTPCollector(zoneTestConfig(zone, push)).Run,
+		"visits":   NewVisitsCollector(zoneTestConfig(zone, push), cloudflare.NewHTTPVisitsQuery(nil)).Run,
 		"dns":      NewDNSCollector(zoneTestConfig(zone, push)).Run,
 		"audit":    NewAuditCollector(auditTestConfig(audit, push)).Run,
 		"rum":      NewRUMCollector(rumTestConfig(rum, push)).Run,
@@ -117,9 +121,9 @@ func TestCollectors_RunPollsThenStops(t *testing.T) {
 		}
 	}
 
-	if len(zone.firewallCalls) != 1 || len(zone.httpCalls) != 1 || len(zone.dnsCalls) != 1 || len(audit.auditCalls) != 1 || len(rum.pageloadCalls) != 1 {
-		t.Errorf("each collector should poll once: firewall=%d http=%d dns=%d audit=%d rum=%d",
-			len(zone.firewallCalls), len(zone.httpCalls), len(zone.dnsCalls), len(audit.auditCalls), len(rum.pageloadCalls))
+	if len(zone.firewallCalls) != 1 || len(zone.httpCalls) != 1 || len(zone.visitsCalls) != 1 || len(zone.dnsCalls) != 1 || len(audit.auditCalls) != 1 || len(rum.pageloadCalls) != 1 {
+		t.Errorf("each collector should poll once: firewall=%d http=%d visits=%d dns=%d audit=%d rum=%d",
+			len(zone.firewallCalls), len(zone.httpCalls), len(zone.visitsCalls), len(zone.dnsCalls), len(audit.auditCalls), len(rum.pageloadCalls))
 	}
 }
 

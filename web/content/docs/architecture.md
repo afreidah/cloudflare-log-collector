@@ -39,6 +39,7 @@ flowchart TD
     POLL["Poll Scheduler"]
     FW["Firewall Collector"]
     HTTP["HTTP Collector"]
+    VISITS["Visits Collector"]
     DNS["DNS Collector"]
     AUDIT["Audit Collector"]
     RUM["RUM Collector"]
@@ -54,16 +55,19 @@ flowchart TD
     CF -->|"GraphQL + REST queries"| POLL
     POLL --> FW
     POLL --> HTTP
+    POLL --> VISITS
     POLL --> DNS
     POLL --> AUDIT
     POLL --> RUM
     FW -->|"JSON log lines"| LOKIC
     HTTP -->|"JSON log lines"| LOKIC
+    VISITS -->|"JSON log lines"| LOKIC
     DNS -->|"JSON log lines"| LOKIC
     AUDIT -->|"JSON log lines"| LOKIC
     RUM -->|"JSON log lines"| LOKIC
     FW -->|"event counters"| METRICS
     HTTP -->|"counters + latency and unique-IP gauges"| METRICS
+    VISITS -->|"visit counters"| METRICS
     DNS -->|"counters + processing gauges"| METRICS
     AUDIT -->|"event counters"| METRICS
     RUM -->|"counters + vitals gauges"| METRICS
@@ -82,7 +86,7 @@ flowchart TD
     classDef viz fill:#2d2513,stroke:#f97316,color:#fef3c7
 
     class CF source
-    class POLL,FW,HTTP,DNS,AUDIT,RUM,METRICS,LOKIC,TRACE,SLOG collector
+    class POLL,FW,HTTP,VISITS,DNS,AUDIT,RUM,METRICS,LOKIC,TRACE,SLOG collector
     class LOKI,PROM,TEMPO sink
     class GRAFANA viz
 {{< /mermaid >}}
@@ -94,6 +98,7 @@ document.addEventListener('DOMContentLoaded', function() {
     'POLL':    { title: 'Poll Scheduler', detail: 'Triggers collection on a configurable interval (default 5m). On startup, backfills up to the configured window (default 1h). Each enabled collector is supervised independently with panic recovery and restart, and wraps its poll in an OpenTelemetry trace.' },
     'FW':      { title: 'Firewall Collector', detail: 'Per zone. Queries firewallEventsAdaptive for individual WAF events. Captures action, client IP, host, method, path, query, ray ID, rule ID, source, user agent, and country. Warns if results hit the 10,000 event cap.' },
     'HTTP':    { title: 'HTTP Collector', detail: 'Per zone. Queries httpRequestsAdaptiveGroups for aggregated traffic stats grouped per minute by host, method, edge and origin status, cache status, request source, and country. Adds to cumulative Prometheus counters and pushes raw data to Loki. Also reports per-host origin latency and edge time to first byte as quantile gauges over a trailing window, and distinct client IPs for the last complete hour and day. Warns at the group cap.' },
+    'VISITS':  { title: 'Visits Collector', detail: 'Per zone (on by default). Queries httpRequestsAdaptiveGroups for server-side visits per minute and host from real clients, leaving out configured user agents (bots, monitors). Needs no browser beacon. Ships groups with visits to Loki and counts them per host.' },
     'DNS':     { title: 'DNS Collector', detail: 'Per zone (on by default). Queries dnsAnalyticsAdaptiveGroups for authoritative DNS queries per minute by name, type, response code, cache state, and colo. Ships groups to Loki and counts by type and response code; processing time p50/p95/p99 are gauges.' },
     'AUDIT':   { title: 'Audit Collector', detail: 'Per account (optional). Queries the REST Audit Logs API for account audit events with cursor pagination, deduping the inclusive since-boundary by event ID. Ships each event to Loki and counts events by action type.' },
     'RUM':     { title: 'RUM Collector', detail: 'Per Web Analytics site (optional). Browser-side Real User Monitoring: page views and sessions become Loki rows and bounded counters (advancing cursor, counted once); Core Web Vitals (LCP, INP, FID, FCP, TTFB, CLS) p75 per host are gauges over a trailing window. Known bots are left out of the metrics. Account-scoped, filtered by site tag; needs Account Analytics Read.' },
@@ -101,7 +106,7 @@ document.addEventListener('DOMContentLoaded', function() {
     'LOKIC':   { title: 'Loki Client', detail: 'Pushes structured JSON log lines to Loki\'s push API. Supports configurable batch size (default 100), multi-tenant X-Scope-OrgID header, and automatic retry with exponential backoff on transient failures (429, 502, 503, 504).' },
     'TRACE':   { title: 'Trace Context', detail: 'OpenTelemetry tracer exporting spans via OTLP gRPC to Tempo. Each poll cycle creates a root span with child spans for every API call, data transformation, and Loki push. Configurable sampling rate.' },
     'SLOG':    { title: 'Structured Logger', detail: 'Custom slog handler that injects trace_id and span_id from the active OpenTelemetry span into every JSON log line. Enables one-click navigation between Loki logs and Tempo traces in Grafana.' },
-    'LOKI':    { title: 'Loki', detail: 'Log aggregation. Receives streams keyed by type: {type="firewall"}, {type="http_traffic"}, {type="dns"}, {type="audit"}, and {type="rum_pageload"}, all under job="cloudflare". Each entry is a structured JSON line queryable via LogQL.' },
+    'LOKI':    { title: 'Loki', detail: 'Log aggregation. Receives streams keyed by type: {type="firewall"}, {type="http_traffic"}, {type="http_visits"}, {type="dns"}, {type="audit"}, and {type="rum_pageload"}, all under job="cloudflare". Each entry is a structured JSON line queryable via LogQL.' },
     'PROM':    { title: 'Prometheus', detail: 'Scrapes /metrics endpoint. Provides poll health monitoring, firewall and audit event trending, HTTP traffic dashboarding, RUM page-view and Core Web Vitals tracking, and Loki push reliability.' },
     'TEMPO':   { title: 'Tempo', detail: 'Distributed tracing backend. Receives OTLP gRPC traces showing the full poll lifecycle with timing for each component.' },
     'GRAFANA': { title: 'Grafana', detail: 'Unified dashboard combining Loki log queries, Prometheus metric panels, and Tempo trace views. Ships with a pre-built dashboard JSON for import.' }
@@ -145,9 +150,10 @@ document.addEventListener('DOMContentLoaded', function() {
 ### Poll Cycle
 
 1. The **poll scheduler** supervises each enabled collector on a configurable interval (default 5 minutes), restarting any that panic or exit
-2. Up to five collector types run, each wrapped in its own **OpenTelemetry span** for end-to-end trace visibility:
+2. Up to six collector types run, each wrapped in its own **OpenTelemetry span** for end-to-end trace visibility:
    - **Firewall collector** (per zone) queries `firewallEventsAdaptive` for individual WAF events
    - **HTTP collector** (per zone) queries `httpRequestsAdaptiveGroups` for aggregated traffic stats, and its hourly and daily rollups for unique client IPs
+   - **Visits collector** (per zone, on by default) queries `httpRequestsAdaptiveGroups` for server-side visits per host
    - **DNS collector** (per zone, on by default) queries `dnsAnalyticsAdaptiveGroups` for authoritative DNS queries
    - **Audit collector** (per account, optional) queries the REST Audit Logs API for account audit events
    - **RUM collector** (per Web Analytics site, optional) queries `rumPageloadEventsAdaptiveGroups` and `rumWebVitalsEventsAdaptiveGroups` for browser-side page views and Core Web Vitals
@@ -164,6 +170,12 @@ document.addEventListener('DOMContentLoaded', function() {
 - Request and edge-byte totals are accumulated into **cumulative Prometheus counters** labeled by host, method, edge and origin status, cache status, request source, and country, so dashboards derive rates with `rate()` and stay immune to poll-window length
 - Per-host **origin latency** and **edge time to first byte** (p50, p95, p99) are **Prometheus gauges** over a trailing window ending now (`cloudflare.latency_window`), client requests only. Origin latency covers requests an origin answered - for a tunneled service it is the tunnel's health - and edge time to first byte includes cache hits. Quantiles cannot be accumulated, so each poll re-queries the window
 - **Unique client IPs** for the last complete hour and UTC day are gauges from the hourly and daily rollups. They count IPs, not people
+
+### Visits
+
+- Cloudflare's **server-side visits** (page views that start at the site) per minute and host, from real clients, are counted at the edge, so they need no browser beacon
+- Requests whose user agent matches `cloudflare.http_visits.exclude_user_agents` are left out by the query; the patterns travel as GraphQL variables, never as query text
+- Groups with visits are pushed to Loki under `{job="cloudflare", type="http_visits"}` and accumulate in a **Prometheus counter** per host
 
 ### DNS
 

@@ -226,6 +226,42 @@ func TestDatasetQueries_Golden(t *testing.T) {
     }
   }
 }`},
+		"http visits": {NewHTTPVisitsQuery([]string{"%bot%", "Monitor%"}).ds.query, `query ($zoneId: String!, $excludeUserAgent0: String!, $excludeUserAgent1: String!, $since: String!, $until: String!, $limit: uint64!) {
+  viewer {
+    zones(filter: {zoneTag: $zoneId}) {
+      httpRequestsAdaptiveGroups(
+        filter: {datetime_gt: $since, datetime_leq: $until, requestSource: "eyeball", AND: [{userAgent_notlike: $excludeUserAgent0}, {userAgent_notlike: $excludeUserAgent1}]}
+        limit: $limit
+      ) {
+        dimensions {
+          datetimeMinute
+          clientRequestHTTPHost
+        }
+        sum {
+          visits
+        }
+      }
+    }
+  }
+}`},
+		"http visits, nothing excluded": {NewHTTPVisitsQuery(nil).ds.query, `query ($zoneId: String!, $since: String!, $until: String!, $limit: uint64!) {
+  viewer {
+    zones(filter: {zoneTag: $zoneId}) {
+      httpRequestsAdaptiveGroups(
+        filter: {datetime_gt: $since, datetime_leq: $until, requestSource: "eyeball"}
+        limit: $limit
+      ) {
+        dimensions {
+          datetimeMinute
+          clientRequestHTTPHost
+        }
+        sum {
+          visits
+        }
+      }
+    }
+  }
+}`},
 	}
 
 	for name, tt := range tests {

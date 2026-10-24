@@ -25,6 +25,7 @@ var (
 	_ cloudflareQuerier = (*cloudflare.Client)(nil)
 	_ firewallQuerier   = (*cloudflare.Client)(nil)
 	_ httpQuerier       = (*cloudflare.Client)(nil)
+	_ visitsQuerier     = (*cloudflare.Client)(nil)
 	_ dnsQuerier        = (*cloudflare.Client)(nil)
 	_ auditQuerier      = (*cloudflare.Client)(nil)
 	_ rumQuerier        = (*cloudflare.Client)(nil)
@@ -54,6 +55,7 @@ type fakeCloudflare struct {
 	edgeLatency    []cloudflare.HTTPLatencyGroup[cloudflare.EdgeLatencyQuantiles]
 	hourlyIPs      []cloudflare.HTTPUniqueIPsGroup
 	dailyIPs       []cloudflare.HTTPUniqueIPsGroup
+	visits         []cloudflare.HTTPVisitsGroup
 	dnsGroups      []cloudflare.DNSQueryGroup
 	dnsProcessing  []cloudflare.DNSProcessingGroup
 	auditEvents    []cloudflare.AuditLogEvent
@@ -65,6 +67,8 @@ type fakeCloudflare struct {
 	edgeCalls      []queryCall
 	hourlyCalls    []queryCall
 	dailyCalls     []queryCall
+	visitsCalls    []queryCall
+	visitsQueries  []cloudflare.HTTPVisitsQuery
 	dnsCalls       []queryCall
 	processingCall []queryCall
 	auditCalls     []queryCall
@@ -98,6 +102,12 @@ func (f *fakeCloudflare) QueryHTTPUniqueIPsHourly(_ context.Context, zoneID stri
 func (f *fakeCloudflare) QueryHTTPUniqueIPsDaily(_ context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPUniqueIPsGroup, error) {
 	f.dailyCalls = append(f.dailyCalls, queryCall{zoneID, since, until})
 	return f.dailyIPs, f.latencyErr
+}
+
+func (f *fakeCloudflare) QueryHTTPVisits(_ context.Context, q cloudflare.HTTPVisitsQuery, zoneID string, since, until time.Time) ([]cloudflare.HTTPVisitsGroup, error) {
+	f.visitsCalls = append(f.visitsCalls, queryCall{zoneID, since, until})
+	f.visitsQueries = append(f.visitsQueries, q)
+	return f.visits, f.err
 }
 
 func (f *fakeCloudflare) QueryDNSQueries(_ context.Context, zoneID string, since, until time.Time) ([]cloudflare.DNSQueryGroup, error) {
