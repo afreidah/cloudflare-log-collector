@@ -169,6 +169,19 @@ func TestDefaults_LagsAndWindows(t *testing.T) {
 	}
 }
 
+func TestDNSConfig_OnUnlessDisabled(t *testing.T) {
+	on, off := true, false
+	for _, tt := range []struct {
+		name    string
+		enabled *bool
+		want    bool
+	}{{"unset", nil, true}, {"true", &on, true}, {"false", &off, false}} {
+		if got := (DNSConfig{Enabled: tt.enabled}).On(); got != tt.want {
+			t.Errorf("%s: On() = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestDefaults_LokiTenantID(t *testing.T) {
 	cfg := validConfig()
 	if err := cfg.setDefaultsAndValidate(); err != nil {

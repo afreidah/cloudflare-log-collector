@@ -108,11 +108,36 @@ var HTTPEdgeTTFBSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Help: "HTTP edge time to first byte quantiles in seconds over the trailing window, by quantile, host, and zone (client requests, cache hits included)",
 }, []string{"quantile", "host", "zone"})
 
+// HTTPUniqueIPs reports distinct client IPs in the last complete hour or UTC
+// day. It counts IPs, not people (bots included, NAT merges visitors).
+var HTTPUniqueIPs = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "cflog_http_unique_ips",
+	Help: "Distinct client IPs in the last complete hour (window=1h) or UTC day (window=1d); counts IPs, not people",
+}, []string{"window", "zone"})
+
 // AuditEventsTotal counts audit log events by action type and account.
 var AuditEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "cflog_audit_events_total",
 	Help: "Cloudflare audit log events by action type",
 }, []string{"action", "account"})
+
+// -------------------------------------------------------------------------
+// DNS METRICS
+// -------------------------------------------------------------------------
+
+// DNSQueriesTotal counts authoritative DNS queries by query type, response
+// code, and zone. Query names stay in Loki.
+var DNSQueriesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "cflog_dns_queries_total",
+	Help: "Authoritative DNS queries observed via Cloudflare analytics by query type, response code, and zone",
+}, []string{"query_type", "response_code", "zone"})
+
+// DNSProcessingSeconds reports DNS processing time quantiles over the
+// trailing latency window.
+var DNSProcessingSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "cflog_dns_processing_seconds",
+	Help: "Authoritative DNS processing time quantiles in seconds over the trailing window, by quantile and zone",
+}, []string{"quantile", "zone"})
 
 // -------------------------------------------------------------------------
 // RUM / WEB ANALYTICS METRICS

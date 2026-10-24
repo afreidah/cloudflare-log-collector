@@ -46,6 +46,7 @@ type CloudflareConfig struct {
 	Zones          []ZoneConfig       `yaml:"zones"`
 	AuditLogs      AuditLogsConfig    `yaml:"audit_logs"`
 	WebAnalytics   WebAnalyticsConfig `yaml:"web_analytics"`
+	DNS            DNSConfig          `yaml:"dns"`
 	PollInterval   time.Duration      `yaml:"poll_interval"`
 	BackfillWindow time.Duration      `yaml:"backfill_window"`
 	IngestionLag   time.Duration      `yaml:"ingestion_lag"`
@@ -83,6 +84,17 @@ type WebAnalyticsConfig struct {
 	Sites        []SiteConfig  `yaml:"sites"`
 	IngestionLag time.Duration `yaml:"ingestion_lag"`
 	VitalsWindow time.Duration `yaml:"vitals_window"`
+}
+
+// DNSConfig holds authoritative DNS analytics settings. Collection runs for
+// every zone unless Enabled is set to false; unset means on.
+type DNSConfig struct {
+	Enabled *bool `yaml:"enabled"`
+}
+
+// On reports whether DNS analytics are collected.
+func (d DNSConfig) On() bool {
+	return d.Enabled == nil || *d.Enabled
 }
 
 // SiteConfig identifies a single Web Analytics site to collect RUM data from.

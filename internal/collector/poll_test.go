@@ -287,6 +287,41 @@ func TestPollTrailing_QueriesTheWindowEndingNow(t *testing.T) {
 	}
 }
 
+func TestPollTrailing_WindowFuncOverridesTrailingWindow(t *testing.T) {
+	tr := newTrailing(15 * time.Minute)
+	spec := tr.spec()
+	spec.window = lastComplete(time.Hour)
+
+	pollTrailing(context.Background(), &tr.b, spec)
+
+	if got := tr.until.Sub(tr.since); got != time.Hour || !tr.until.Equal(tr.until.Truncate(time.Hour)) {
+		t.Errorf("window = [%v, %v), want the last whole hour", tr.since, tr.until)
+	}
+}
+
+func TestLastComplete_ReportsTheLastWholePeriod(t *testing.T) {
+	now := time.Date(2026, 10, 21, 9, 42, 7, 0, time.UTC)
+	tests := []struct {
+		period       time.Duration
+		since, until time.Time
+	}{
+		{time.Hour, time.Date(2026, 10, 21, 8, 0, 0, 0, time.UTC), time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)},
+		{24 * time.Hour, time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC)},
+	}
+	for _, tt := range tests {
+		since, until := lastComplete(tt.period)(now)
+		if !since.Equal(tt.since) || !until.Equal(tt.until) {
+			t.Errorf("lastComplete(%v) = [%v, %v), want [%v, %v)", tt.period, since, until, tt.since, tt.until)
+		}
+	}
+
+	// On a boundary the period just ended is complete and is the one reported.
+	since, _ := lastComplete(time.Hour)(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
+	if want := time.Date(2026, 10, 21, 8, 0, 0, 0, time.UTC); !since.Equal(want) {
+		t.Errorf("at 09:00 since = %v, want %v", since, want)
+	}
+}
+
 func TestPollTrailing_ReplacesThisScopesSeries(t *testing.T) {
 	tr := newTrailing(time.Hour)
 	tr.b.set(tr.gauge, 1, "stale")

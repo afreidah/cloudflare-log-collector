@@ -6,7 +6,9 @@
 // Queries the zone-scoped httpRequestsAdaptiveGroups GraphQL dataset for HTTP
 // traffic aggregated per minute by host, method, edge and origin status, cache
 // status, request source, and country, and for per-host latency quantiles:
-// origin response time and edge time to first byte.
+// origin response time and edge time to first byte. Also queries the hourly
+// and daily rollups (httpRequests1hGroups, httpRequests1dGroups) for distinct
+// client IPs.
 // -------------------------------------------------------------------------------
 
 package cloudflare
@@ -64,20 +66,6 @@ func (c *Client) QueryHTTPRequests(ctx context.Context, zoneID string, since, un
 // -------------------------------------------------------------------------
 // LATENCY
 // -------------------------------------------------------------------------
-
-// Percentiles is a latency distribution in milliseconds: its p50, p95, and
-// p99.
-type Percentiles struct {
-	P50 float64
-	P95 float64
-	P99 float64
-}
-
-// LatencyQuantiles is a quantile set an HTTP latency dataset selects, read
-// back as Percentiles so every latency kind is handled the same way.
-type LatencyQuantiles interface {
-	Percentiles() Percentiles
-}
 
 // HTTPLatencyGroup is one host's latency quantiles over a window. Q is the
 // quantile set selected - origin response time or edge time to first byte -
@@ -159,4 +147,56 @@ func (c *Client) QueryHTTPOriginLatency(ctx context.Context, zoneID string, sinc
 // the given zone and time range.
 func (c *Client) QueryHTTPEdgeLatency(ctx context.Context, zoneID string, since, until time.Time) ([]HTTPLatencyGroup[EdgeLatencyQuantiles], error) {
 	return queryZone(ctx, c, httpEdgeLatencyDataset, zoneID, since, until)
+}
+
+// -------------------------------------------------------------------------
+// UNIQUE IPS
+// -------------------------------------------------------------------------
+
+// HTTPUniqueIPsGroup is the number of distinct client IPs across one or more
+// hourly or daily rollup buckets. It counts IPs, not people: bots, scanners,
+// and monitors are included, and NAT or mobile carriers merge or split real
+// visitors.
+type HTTPUniqueIPsGroup struct {
+	Uniq HTTPUniq `json:"uniq"`
+}
+
+// HTTPUniq holds a rollup's distinct-value counts.
+type HTTPUniq struct {
+	Uniques int64 `json:"uniques"`
+}
+
+// uniqueIPsQueryLimit bounds the unique-IP rollup queries; with no dimensions
+// they return a single row for the window.
+const uniqueIPsQueryLimit = 10
+
+// httpUniqueIPsHourlyDataset and httpUniqueIPsDailyDataset fetch the distinct
+// client IPs in the hourly and daily rollup buckets that start within
+// [since, until). Distinct counts cannot be added up, so a caller asks for
+// exactly the one bucket it reports.
+var (
+	httpUniqueIPsHourlyDataset = newDataset[HTTPUniqueIPsGroup](datasetSpec{
+		field:  "httpRequests1hGroups",
+		scope:  zoneScope,
+		window: hourBucket,
+		limit:  uniqueIPsQueryLimit,
+	})
+	httpUniqueIPsDailyDataset = newDataset[HTTPUniqueIPsGroup](datasetSpec{
+		field:  "httpRequests1dGroups",
+		scope:  zoneScope,
+		window: dayBucket,
+		limit:  uniqueIPsQueryLimit,
+	})
+)
+
+// QueryHTTPUniqueIPsHourly fetches the distinct client IPs in the hourly
+// buckets starting in [since, until) for the given zone.
+func (c *Client) QueryHTTPUniqueIPsHourly(ctx context.Context, zoneID string, since, until time.Time) ([]HTTPUniqueIPsGroup, error) {
+	return queryZone(ctx, c, httpUniqueIPsHourlyDataset, zoneID, since, until)
+}
+
+// QueryHTTPUniqueIPsDaily fetches the distinct client IPs in the daily buckets
+// (UTC dates) starting in [since, until) for the given zone.
+func (c *Client) QueryHTTPUniqueIPsDaily(ctx context.Context, zoneID string, since, until time.Time) ([]HTTPUniqueIPsGroup, error) {
+	return queryZone(ctx, c, httpUniqueIPsDailyDataset, zoneID, since, until)
 }

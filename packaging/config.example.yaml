@@ -30,6 +30,9 @@ cloudflare:
         name: "example.com"
     ingestion_lag: 10m
     vitals_window: 1h
+  # Authoritative DNS analytics for every zone (on by default).
+  dns:
+    enabled: true
   poll_interval: 5m
   backfill_window: 1h
   # Hold firewall, HTTP, and audit poll windows back from now so Cloudflare has

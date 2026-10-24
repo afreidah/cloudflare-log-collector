@@ -183,8 +183,9 @@ func newNamedRunner(dataset collector.Dataset, scope string, runner lifecycle.Ru
 }
 
 // plannedCollectors builds the full ordered set of collector registrations from
-// config: a firewall and HTTP collector per zone, plus an audit collector per
-// account and a RUM collector per site when those are enabled. Keeping the plan
+// config: a firewall, HTTP, and (unless disabled) DNS collector per zone, plus
+// an audit collector per account and a RUM collector per site when those are
+// enabled. Keeping the plan
 // a pure function of config and clients lets tests assert the registration set
 // without standing up a lifecycle manager.
 func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Client) []namedRunner {
@@ -218,6 +219,9 @@ func plannedCollectors(cfg *config.Config, cf *cloudflare.Client, lk *loki.Clien
 			newNamedRunner(collector.DatasetFirewall, zone.Name, collector.NewFirewallCollector(cc)),
 			newNamedRunner(collector.DatasetHTTP, zone.Name, collector.NewHTTPCollector(cc)),
 		)
+		if cfg.Cloudflare.DNS.On() {
+			planned = append(planned, newNamedRunner(collector.DatasetDNS, zone.Name, collector.NewDNSCollector(cc)))
+		}
 	}
 
 	if cfg.Cloudflare.AuditLogs.Enabled {

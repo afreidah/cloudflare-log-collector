@@ -7,9 +7,10 @@
 // A cursor-based poll reads the window (cursor, now - ingestion lag], skips
 // when that window is empty, and ships the rows to Loki before committing
 // them - counting them into Prometheus and moving the cursor. A trailing poll
-// reads a fixed window ending now and repopulates gauges from it; it is for
-// quantiles, which cannot be accumulated, so there is no cursor and
-// re-querying the window every poll self-heals late data. Both share the query
+// reads a fixed window - ending now, or the last complete hour or day - and
+// repopulates gauges from it; it is for quantiles and distinct counts, which
+// cannot be accumulated, so there is no cursor and re-querying the window
+// every poll self-heals late data. Both share the query
 // step: a traced span, the timed query, its recorded outcome, and the failure
 // path. A collector describes a dataset with a cursorPoll or trailingPoll spec
 // and calls pollCursor or pollTrailing; it does not reimplement any of the
@@ -144,24 +145,32 @@ func pollCursor[T any](ctx context.Context, b *base, p cursorPoll[T]) {
 // -------------------------------------------------------------------------
 
 // trailingPoll describes one trailing-window dataset poll to pollTrailing.
-// gauges are the metrics set repopulates; each is cleared for the collector's
-// scope before set runs, so a series absent from the latest window does not
-// linger at a stale value.
+// window, if set, picks the window to query from now (lastComplete reports a
+// whole hour or day); left unset, it is the collector's trailing window ending
+// now. gauges are the metrics set repopulates; each is cleared for the
+// collector's scope before set runs, so a series absent from the latest window
+// does not linger at a stale value.
 type trailingPoll[T any] struct {
 	pollQuery[T]
+	window func(now time.Time) (since, until time.Time)
 	gauges []*prometheus.GaugeVec
 	set    func(rows []T)
 }
 
-// pollTrailing runs one poll cycle for p within a traced span over the
-// collector's trailing window ending now. On success the gauges are cleared
-// and repopulated; a failed query leaves them at their last values.
+// pollTrailing runs one poll cycle for p within a traced span over its window.
+// On success the gauges are cleared and repopulated; a failed query leaves
+// them at their last values.
 func pollTrailing[T any](ctx context.Context, b *base, p trailingPoll[T]) {
 	ctx, span := p.startSpan(ctx, b)
 	defer span.End()
 
-	until := time.Now().UTC()
-	rows, ok := p.fetch(ctx, b, span, until.Add(-b.trailingWindow), until)
+	now := time.Now().UTC()
+	since, until := now.Add(-b.trailingWindow), now
+	if p.window != nil {
+		since, until = p.window(now)
+	}
+
+	rows, ok := p.fetch(ctx, b, span, since, until)
 	if !ok {
 		return
 	}
@@ -172,4 +181,15 @@ func pollTrailing[T any](ctx context.Context, b *base, p trailingPoll[T]) {
 	p.set(rows)
 
 	slog.DebugContext(ctx, p.title+" collected", b.scopeKey, b.scope, "groups", len(rows))
+}
+
+// lastComplete is a trailingPoll window: the last whole period - an hour, or a
+// UTC day for 24h - that ended at or before now, as [start, end). The period
+// still in progress is never reported, so a value is always for a full hour or
+// day; re-querying it every poll picks up data Cloudflare adds late.
+func lastComplete(period time.Duration) func(now time.Time) (since, until time.Time) {
+	return func(now time.Time) (time.Time, time.Time) {
+		until := now.UTC().Truncate(period)
+		return until.Add(-period), until
+	}
 }
