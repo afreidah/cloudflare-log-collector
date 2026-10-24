@@ -25,6 +25,7 @@ var (
 	_ cloudflareQuerier = (*cloudflare.Client)(nil)
 	_ firewallQuerier   = (*cloudflare.Client)(nil)
 	_ httpQuerier       = (*cloudflare.Client)(nil)
+	_ dnsQuerier        = (*cloudflare.Client)(nil)
 	_ auditQuerier      = (*cloudflare.Client)(nil)
 	_ rumQuerier        = (*cloudflare.Client)(nil)
 	_ logPusher         = (*loki.Client)(nil)
@@ -44,13 +45,17 @@ type queryCall struct {
 
 // fakeCloudflare implements cloudflareQuerier and auditQuerier with canned
 // responses and a shared error, recording every call's arguments per dataset.
-// latencyErr fails only the two latency queries, so a test can tell the HTTP
-// collector's polls apart.
+// latencyErr fails only the latency, unique-IP, and DNS processing queries, so
+// a test can tell the cursor polls from the gauge polls.
 type fakeCloudflare struct {
 	firewallEvents []cloudflare.FirewallEvent
 	httpGroups     []cloudflare.HTTPRequestGroup
 	originLatency  []cloudflare.HTTPLatencyGroup[cloudflare.OriginLatencyQuantiles]
 	edgeLatency    []cloudflare.HTTPLatencyGroup[cloudflare.EdgeLatencyQuantiles]
+	hourlyIPs      []cloudflare.HTTPUniqueIPsGroup
+	dailyIPs       []cloudflare.HTTPUniqueIPsGroup
+	dnsGroups      []cloudflare.DNSQueryGroup
+	dnsProcessing  []cloudflare.DNSProcessingGroup
 	auditEvents    []cloudflare.AuditLogEvent
 	err            error
 	latencyErr     error
@@ -58,6 +63,10 @@ type fakeCloudflare struct {
 	httpCalls      []queryCall
 	originCalls    []queryCall
 	edgeCalls      []queryCall
+	hourlyCalls    []queryCall
+	dailyCalls     []queryCall
+	dnsCalls       []queryCall
+	processingCall []queryCall
 	auditCalls     []queryCall
 }
 
@@ -79,6 +88,26 @@ func (f *fakeCloudflare) QueryHTTPOriginLatency(_ context.Context, zoneID string
 func (f *fakeCloudflare) QueryHTTPEdgeLatency(_ context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPLatencyGroup[cloudflare.EdgeLatencyQuantiles], error) {
 	f.edgeCalls = append(f.edgeCalls, queryCall{zoneID, since, until})
 	return f.edgeLatency, f.latencyErr
+}
+
+func (f *fakeCloudflare) QueryHTTPUniqueIPsHourly(_ context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPUniqueIPsGroup, error) {
+	f.hourlyCalls = append(f.hourlyCalls, queryCall{zoneID, since, until})
+	return f.hourlyIPs, f.latencyErr
+}
+
+func (f *fakeCloudflare) QueryHTTPUniqueIPsDaily(_ context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPUniqueIPsGroup, error) {
+	f.dailyCalls = append(f.dailyCalls, queryCall{zoneID, since, until})
+	return f.dailyIPs, f.latencyErr
+}
+
+func (f *fakeCloudflare) QueryDNSQueries(_ context.Context, zoneID string, since, until time.Time) ([]cloudflare.DNSQueryGroup, error) {
+	f.dnsCalls = append(f.dnsCalls, queryCall{zoneID, since, until})
+	return f.dnsGroups, f.err
+}
+
+func (f *fakeCloudflare) QueryDNSProcessingTime(_ context.Context, zoneID string, since, until time.Time) ([]cloudflare.DNSProcessingGroup, error) {
+	f.processingCall = append(f.processingCall, queryCall{zoneID, since, until})
+	return f.dnsProcessing, f.latencyErr
 }
 
 func (f *fakeCloudflare) QueryAuditLogs(_ context.Context, accountID string, since, before time.Time) ([]cloudflare.AuditLogEvent, error) {

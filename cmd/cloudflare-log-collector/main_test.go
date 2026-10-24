@@ -54,8 +54,8 @@ func TestPlannedCollectors_ZonesOnly(t *testing.T) {
 	planned := plannedCollectors(testConfig(false), cf, lk)
 
 	want := []string{
-		"firewall-example.com", "http-example.com",
-		"firewall-example.org", "http-example.org",
+		"firewall-example.com", "http-example.com", "dns-example.com",
+		"firewall-example.org", "http-example.org", "dns-example.org",
 	}
 	if got := registrationNames(planned); !slices.Equal(got, want) {
 		t.Errorf("registration names = %v, want %v", got, want)
@@ -67,6 +67,22 @@ func TestPlannedCollectors_ZonesOnly(t *testing.T) {
 	}
 }
 
+func TestPlannedCollectors_DNSDisabledSkipsDNS(t *testing.T) {
+	cfg := testConfig(false)
+	off := false
+	cfg.Cloudflare.DNS.Enabled = &off
+
+	planned := plannedCollectors(cfg, cloudflare.NewClient("t"), loki.NewClient("http://loki", "t"))
+
+	want := []string{
+		"firewall-example.com", "http-example.com",
+		"firewall-example.org", "http-example.org",
+	}
+	if got := registrationNames(planned); !slices.Equal(got, want) {
+		t.Errorf("registration names = %v, want %v", got, want)
+	}
+}
+
 func TestPlannedCollectors_WithAudit(t *testing.T) {
 	cf := cloudflare.NewClient("token")
 	lk := loki.NewClient("http://loki", "tenant")
@@ -74,8 +90,8 @@ func TestPlannedCollectors_WithAudit(t *testing.T) {
 	planned := plannedCollectors(testConfig(true), cf, lk)
 
 	want := []string{
-		"firewall-example.com", "http-example.com",
-		"firewall-example.org", "http-example.org",
+		"firewall-example.com", "http-example.com", "dns-example.com",
+		"firewall-example.org", "http-example.org", "dns-example.org",
 		"audit-acme",
 	}
 	if got := registrationNames(planned); !slices.Equal(got, want) {
@@ -95,8 +111,8 @@ func TestPlannedCollectors_AuditDisabledSkipsAccounts(t *testing.T) {
 			t.Errorf("audit collector registered while audit logging disabled")
 		}
 	}
-	if len(planned) != 4 {
-		t.Errorf("got %d registrations, want 4 (2 zones x 2)", len(planned))
+	if len(planned) != 6 {
+		t.Errorf("got %d registrations, want 6 (2 zones x 3)", len(planned))
 	}
 }
 
@@ -147,8 +163,8 @@ func TestPlannedCollectors_WithWebAnalytics(t *testing.T) {
 	planned := plannedCollectors(withWebAnalytics(), cf, lk)
 
 	want := []string{
-		"firewall-example.com", "http-example.com",
-		"firewall-example.org", "http-example.org",
+		"firewall-example.com", "http-example.com", "dns-example.com",
+		"firewall-example.org", "http-example.org", "dns-example.org",
 		"rum-example.com", "rum-example.org",
 	}
 	if got := registrationNames(planned); !slices.Equal(got, want) {

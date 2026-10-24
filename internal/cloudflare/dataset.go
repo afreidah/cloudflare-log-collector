@@ -9,7 +9,8 @@
 // field added to the struct is always asked for, and the query cannot silently
 // drift from the struct. The rest of the document - variables, the zone or
 // account node, the window filter, the limit - is the same skeleton for every
-// dataset, written once. queryDataset runs a dataset over a time window and
+// dataset, written once; only which filter keys bound the window differs, for
+// the hourly and daily rollups. queryDataset runs a dataset over a time window and
 // extracts its rows from the response; queryZone and querySite supply the
 // zone or site variables for it.
 // -------------------------------------------------------------------------------
@@ -54,34 +55,61 @@ const (
 )
 
 // -------------------------------------------------------------------------
+// WINDOWS
+// -------------------------------------------------------------------------
+
+// windowFilter is how a dataset's time window is filtered: lower and upper are
+// the filter keys bounding it by $since and $until, and layout formats those
+// times. Adaptive datasets read (since, until] so cursor windows never
+// overlap; rollups read [since, until) to select exactly one bucket.
+type windowFilter struct {
+	lower  string
+	upper  string
+	layout string
+}
+
+// afterUntil is the (since, until] window of the adaptive datasets, and the
+// default. hourBucket and dayBucket are the [since, until) windows of the
+// hourly and daily rollups; the daily one filters on dates.
+var (
+	afterUntil = windowFilter{lower: "datetime_gt", upper: "datetime_leq", layout: time.RFC3339}
+	hourBucket = windowFilter{lower: "datetime_geq", upper: "datetime_lt", layout: time.RFC3339}
+	dayBucket  = windowFilter{lower: "date_geq", upper: "date_lt", layout: time.DateOnly}
+)
+
+// -------------------------------------------------------------------------
 // DATASETS
 // -------------------------------------------------------------------------
 
 // datasetSpec is what differs between dataset queries. field is the dataset's
 // field name in both the query and the response (e.g. "firewallEventsAdaptive")
-// and scope the node it lives under. vars names any extra String! variables
-// the query declares (e.g. "siteTag"), and filters any extra terms added to the
-// window filter (e.g. "siteTag: $siteTag", "bot: 0"). orderBy, if set, is the
-// ordering argument (e.g. "[datetime_ASC]"). limit is the most rows requested
-// per query - a full page means the window may hold more, so it is logged as
-// possibly truncated.
+// and scope the node it lives under. window is how its time window is
+// filtered; left unset it is afterUntil. vars names any extra String!
+// variables the query declares (e.g. "siteTag"), and filters any extra terms
+// added to the window filter (e.g. "siteTag: $siteTag", "bot: 0"). orderBy, if
+// set, is the ordering argument (e.g. "[datetime_ASC]"). limit is the most rows
+// requested per query - a full page means the window may hold more, so it is
+// logged as possibly truncated.
 type datasetSpec struct {
 	field   string
 	scope   queryScope
+	window  windowFilter
 	vars    []string
 	filters []string
 	orderBy string
 	limit   int
 }
 
-// datasetInfo is a built dataset query: its field and node, its row limit, and
-// the GraphQL document, which declares $since, $until, $limit, the scope
-// variable, and any extra variables.
+// datasetInfo is a built dataset query: its field and node, its row limit, the
+// layout its window bounds are formatted with, and the GraphQL document, which
+// declares $since, $until, $limit, the scope variable, and any extra
+// variables.
 type datasetInfo struct {
-	field string
-	node  string
-	limit int
-	query string
+	field  string
+	node   string
+	limit  int
+	layout string
+	query  string
 }
 
 // dataset is a built query whose rows decode into T. Binding T here means a
@@ -93,22 +121,26 @@ type dataset[T any] struct {
 // newDataset builds the query for spec with the selection set generated from
 // T, once, so polls reuse the finished document.
 func newDataset[T any](spec datasetSpec) dataset[T] {
+	if spec.window == (windowFilter{}) {
+		spec.window = afterUntil
+	}
 	return dataset[T]{datasetInfo{
-		field: spec.field,
-		node:  spec.scope.node,
-		limit: spec.limit,
-		query: buildQuery(spec, reflect.TypeFor[T]()),
+		field:  spec.field,
+		node:   spec.scope.node,
+		limit:  spec.limit,
+		layout: spec.window.layout,
+		query:  buildQuery(spec, reflect.TypeFor[T]()),
 	}}
 }
 
-// queryDataset runs ds over the (since, until] window and returns its rows.
-// vars carries the dataset's scope variables (zone ID, or account ID and site
-// tag); the window and limit are added here. scopeTag - the zone or site tag -
-// labels the span and the truncation warning. A response with no zone/account
-// node returns nil rows and no error.
+// queryDataset runs ds over its window from since to until and returns its
+// rows. vars carries the dataset's scope variables (zone ID, or account ID and
+// site tag); the window, formatted for the dataset, and limit are added here.
+// scopeTag - the zone or site tag - labels the span and the truncation
+// warning. A response with no zone/account node returns nil rows and no error.
 func queryDataset[T any](ctx context.Context, c *Client, ds dataset[T], scopeTag string, since, until time.Time, vars map[string]any) ([]T, error) {
-	vars["since"] = since.UTC().Format(time.RFC3339)
-	vars["until"] = until.UTC().Format(time.RFC3339)
+	vars["since"] = since.UTC().Format(ds.layout)
+	vars["until"] = until.UTC().Format(ds.layout)
 	vars["limit"] = ds.limit
 
 	body, err := c.doQuery(ctx, scopeTag, ds.query, vars)
@@ -143,13 +175,15 @@ func queryDataset[T any](ctx context.Context, c *Client, ds dataset[T], scopeTag
 	return rows, nil
 }
 
-// queryZone runs a zone-scoped dataset for one zone over (since, until].
+// queryZone runs a zone-scoped dataset for one zone over its window from
+// since to until.
 func queryZone[T any](ctx context.Context, c *Client, ds dataset[T], zoneID string, since, until time.Time) ([]T, error) {
 	return queryDataset(ctx, c, ds, zoneID, since, until, map[string]any{zoneScope.variable: zoneID})
 }
 
-// querySite runs an account-scoped Web Analytics dataset for one site over
-// (since, until]. The dataset's spec must declare and filter on $siteTag.
+// querySite runs an account-scoped Web Analytics dataset for one site over its
+// window from since to until. The dataset's spec must declare and filter on
+// $siteTag.
 func querySite[T any](ctx context.Context, c *Client, ds dataset[T], accountID, siteTag string, since, until time.Time) ([]T, error) {
 	return queryDataset(ctx, c, ds, siteTag, since, until,
 		map[string]any{accountScope.variable: accountID, siteTagVar: siteTag})
@@ -168,7 +202,7 @@ func buildQuery(spec datasetSpec, rowType reflect.Type) string {
 	}
 	decls = append(decls, "$since: String!", "$until: String!", "$limit: uint64!")
 
-	filter := append([]string{"datetime_gt: $since", "datetime_leq: $until"}, spec.filters...)
+	filter := append([]string{spec.window.lower + ": $since", spec.window.upper + ": $until"}, spec.filters...)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "query (%s) {\n", strings.Join(decls, ", "))

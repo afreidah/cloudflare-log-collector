@@ -113,6 +113,71 @@ func TestDatasetQueries_Golden(t *testing.T) {
     }
   }
 }`},
+		"http unique ips hourly": {httpUniqueIPsHourlyDataset.query, `query ($zoneId: String!, $since: String!, $until: String!, $limit: uint64!) {
+  viewer {
+    zones(filter: {zoneTag: $zoneId}) {
+      httpRequests1hGroups(
+        filter: {datetime_geq: $since, datetime_lt: $until}
+        limit: $limit
+      ) {
+        uniq {
+          uniques
+        }
+      }
+    }
+  }
+}`},
+		"http unique ips daily": {httpUniqueIPsDailyDataset.query, `query ($zoneId: String!, $since: String!, $until: String!, $limit: uint64!) {
+  viewer {
+    zones(filter: {zoneTag: $zoneId}) {
+      httpRequests1dGroups(
+        filter: {date_geq: $since, date_lt: $until}
+        limit: $limit
+      ) {
+        uniq {
+          uniques
+        }
+      }
+    }
+  }
+}`},
+		"dns queries": {dnsQueryDataset.query, `query ($zoneId: String!, $since: String!, $until: String!, $limit: uint64!) {
+  viewer {
+    zones(filter: {zoneTag: $zoneId}) {
+      dnsAnalyticsAdaptiveGroups(
+        filter: {datetime_gt: $since, datetime_leq: $until}
+        limit: $limit
+      ) {
+        count
+        dimensions {
+          datetimeMinute
+          queryName
+          queryType
+          responseCode
+          responseCached
+          coloName
+        }
+      }
+    }
+  }
+}`},
+		"dns processing": {dnsProcessingDataset.query, `query ($zoneId: String!, $since: String!, $until: String!, $limit: uint64!) {
+  viewer {
+    zones(filter: {zoneTag: $zoneId}) {
+      dnsAnalyticsAdaptiveGroups(
+        filter: {datetime_gt: $since, datetime_leq: $until}
+        limit: $limit
+      ) {
+        count
+        quantiles {
+          processingTimeUsP50
+          processingTimeUsP95
+          processingTimeUsP99
+        }
+      }
+    }
+  }
+}`},
 		"rum pageloads": {rumPageloadDataset.query, `query ($accountId: String!, $siteTag: String!, $since: String!, $until: String!, $limit: uint64!) {
   viewer {
     accounts(filter: {accountTag: $accountId}) {
@@ -175,6 +240,7 @@ func TestLatencyQuantiles_Percentiles(t *testing.T) {
 	for name, q := range map[string]LatencyQuantiles{
 		"origin": OriginLatencyQuantiles{OriginResponseDurationMsP50: 1, OriginResponseDurationMsP95: 2, OriginResponseDurationMsP99: 3},
 		"edge":   EdgeLatencyQuantiles{EdgeTimeToFirstByteMsP50: 1, EdgeTimeToFirstByteMsP95: 2, EdgeTimeToFirstByteMsP99: 3},
+		"dns":    DNSProcessingQuantiles{ProcessingTimeUsP50: 1, ProcessingTimeUsP95: 2, ProcessingTimeUsP99: 3},
 	} {
 		if got := q.Percentiles(); got != want {
 			t.Errorf("%s Percentiles() = %+v, want %+v", name, got, want)

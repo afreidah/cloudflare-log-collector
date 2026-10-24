@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/afreidah/cloudflare-log-collector/internal/cloudflare"
 	"github.com/afreidah/cloudflare-log-collector/internal/metrics"
 	"github.com/afreidah/cloudflare-log-collector/internal/telemetry"
 
@@ -210,6 +211,18 @@ func (b *base) setDuration(gauge *prometheus.GaugeVec, raw float64, unit time.Du
 		return
 	}
 	b.set(gauge, raw/float64(time.Second/unit), labels...)
+}
+
+// setPercentiles sets gauge's p50, p95, and p99 series - quantile "0.5",
+// "0.95", "0.99" as the first label, then labels, then the scope - from p, a
+// latency distribution Cloudflare reports in unit, converted to seconds.
+func (b *base) setPercentiles(gauge *prometheus.GaugeVec, p cloudflare.Percentiles, unit time.Duration, labels ...string) {
+	for _, q := range []struct {
+		label string
+		raw   float64
+	}{{"0.5", p.P50}, {"0.95", p.P95}, {"0.99", p.P99}} {
+		b.setDuration(gauge, q.raw, unit, append([]string{q.label}, labels...)...)
+	}
 }
 
 // clear deletes every series of gauge in this collector's scope, so a gauge

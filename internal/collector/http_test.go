@@ -149,6 +149,49 @@ func TestHTTPPoll_LokiRecovers_CountsWindowOnce(t *testing.T) {
 // LATENCY
 // -------------------------------------------------------------------------
 
+// -------------------------------------------------------------------------
+// UNIQUE IPS
+// -------------------------------------------------------------------------
+
+func TestHTTPPoll_UniqueIPsForLastCompleteHourAndDay(t *testing.T) {
+	metrics.HTTPUniqueIPs.Reset()
+	cf := &fakeCloudflare{
+		hourlyIPs: []cloudflare.HTTPUniqueIPsGroup{{Uniq: cloudflare.HTTPUniq{Uniques: 23}}},
+		dailyIPs:  []cloudflare.HTTPUniqueIPsGroup{{Uniq: cloudflare.HTTPUniq{Uniques: 583}}},
+	}
+	c := NewHTTPCollector(zoneTestConfig(cf, &fakePusher{}))
+
+	c.poll(context.Background())
+
+	// Each rollup is asked for exactly its last whole period, never the
+	// current, partial one.
+	for name, tt := range map[string]struct {
+		calls  []queryCall
+		period time.Duration
+	}{"hourly": {cf.hourlyCalls, time.Hour}, "daily": {cf.dailyCalls, 24 * time.Hour}} {
+		if len(tt.calls) != 1 {
+			t.Fatalf("%s calls = %d, want 1", name, len(tt.calls))
+		}
+		w := tt.calls[0]
+		if w.until.Sub(w.since) != tt.period || !w.until.Equal(w.until.Truncate(tt.period)) || w.until.After(time.Now()) {
+			t.Errorf("%s window = [%v, %v), want the last complete %v", name, w.since, w.until, tt.period)
+		}
+	}
+	assertGaugeValue(t, metrics.HTTPUniqueIPs.WithLabelValues("1h", "example.com"), 23)
+	assertGaugeValue(t, metrics.HTTPUniqueIPs.WithLabelValues("1d", "example.com"), 583)
+}
+
+func TestHTTPPoll_UniqueIPsEmptyWindowIsZero(t *testing.T) {
+	metrics.HTTPUniqueIPs.Reset()
+	metrics.HTTPUniqueIPs.WithLabelValues("1h", "example.com").Set(9)
+	c := NewHTTPCollector(zoneTestConfig(&fakeCloudflare{}, &fakePusher{}))
+
+	c.poll(context.Background())
+
+	// No rows means no clients in the hour, not a missing value.
+	assertGaugeValue(t, metrics.HTTPUniqueIPs.WithLabelValues("1h", "example.com"), 0)
+}
+
 // resetLatencyMetrics clears the process-global latency gauges so a test
 // asserts exact series.
 func resetLatencyMetrics() {

@@ -42,13 +42,15 @@ func decodeRequest(t *testing.T, r *http.Request) graphQLRequest {
 
 // datasetCase is one dataset query under test: the built dataset it runs, the
 // scope variables it must send, sample rows for the server to return, and a
-// call that runs the query and returns its rows.
+// call that runs the query and returns its rows. window is the since and until
+// it must send; unset, the RFC3339 window bounds.
 type datasetCase struct {
-	name string
-	info datasetInfo
-	vars map[string]any
-	rows any
-	call func(c *Client, since, until time.Time) (any, error)
+	name   string
+	info   datasetInfo
+	vars   map[string]any
+	window []string
+	rows   any
+	call   func(c *Client, since, until time.Time) (any, error)
 }
 
 func datasetCases() []datasetCase {
@@ -93,6 +95,48 @@ func datasetCases() []datasetCase {
 				Quantiles: EdgeLatencyQuantiles{EdgeTimeToFirstByteMsP50: 271, EdgeTimeToFirstByteMsP95: 882, EdgeTimeToFirstByteMsP99: 1769}}},
 			call: func(c *Client, since, until time.Time) (any, error) {
 				return c.QueryHTTPEdgeLatency(ctx, "zone1", since, until)
+			},
+		},
+		{
+			name: "http unique ips hourly",
+			info: httpUniqueIPsHourlyDataset.datasetInfo,
+			vars: map[string]any{"zoneId": "zone1"},
+			rows: []HTTPUniqueIPsGroup{{Uniq: HTTPUniq{Uniques: 11}}},
+			call: func(c *Client, since, until time.Time) (any, error) {
+				return c.QueryHTTPUniqueIPsHourly(ctx, "zone1", since, until)
+			},
+		},
+		{
+			name:   "http unique ips daily",
+			info:   httpUniqueIPsDailyDataset.datasetInfo,
+			vars:   map[string]any{"zoneId": "zone1"},
+			window: []string{"2026-03-13", "2026-03-13"},
+			rows:   []HTTPUniqueIPsGroup{{Uniq: HTTPUniq{Uniques: 583}}},
+			call: func(c *Client, since, until time.Time) (any, error) {
+				return c.QueryHTTPUniqueIPsDaily(ctx, "zone1", since, until)
+			},
+		},
+		{
+			name: "dns queries",
+			info: dnsQueryDataset.datasetInfo,
+			vars: map[string]any{"zoneId": "zone1"},
+			rows: []DNSQueryGroup{{Count: 15, Dimensions: DNSQueryDimensions{
+				DatetimeMinute: "2026-03-13T10:00:00Z", QueryName: "woodpecker.munchbox.cc", QueryType: "A",
+				ResponseCode: "NXDOMAIN", ResponseCached: 1, ColoName: "LAX",
+			}}},
+			call: func(c *Client, since, until time.Time) (any, error) {
+				return c.QueryDNSQueries(ctx, "zone1", since, until)
+			},
+		},
+		{
+			name: "dns processing",
+			info: dnsProcessingDataset.datasetInfo,
+			vars: map[string]any{"zoneId": "zone1"},
+			rows: []DNSProcessingGroup{{Count: 53, Quantiles: DNSProcessingQuantiles{
+				ProcessingTimeUsP50: 2763, ProcessingTimeUsP95: 6156, ProcessingTimeUsP99: 9146,
+			}}},
+			call: func(c *Client, since, until time.Time) (any, error) {
+				return c.QueryDNSProcessingTime(ctx, "zone1", since, until)
 			},
 		},
 		{
@@ -148,7 +192,11 @@ func TestDatasetQueries_SendVariablesAndDecodeRows(t *testing.T) {
 			if got.Query != tc.info.query {
 				t.Errorf("sent query is not the dataset's generated document:\n%s", got.Query)
 			}
-			want := map[string]any{"since": "2026-03-13T10:00:00Z", "until": "2026-03-13T11:00:00Z", "limit": float64(tc.info.limit)}
+			window := tc.window
+			if window == nil {
+				window = []string{"2026-03-13T10:00:00Z", "2026-03-13T11:00:00Z"}
+			}
+			want := map[string]any{"since": window[0], "until": window[1], "limit": float64(tc.info.limit)}
 			maps.Copy(want, tc.vars)
 			if !reflect.DeepEqual(got.Variables, want) {
 				t.Errorf("variables = %v, want %v", got.Variables, want)

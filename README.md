@@ -66,6 +66,14 @@ Every service sharing a zone gets its own `host` series (lowercased, port stripp
 
 Per-host latency comes from two more queries per poll over a trailing window ending now (`cloudflare.latency_window`, default 15m), client requests only: **origin latency** (how long the origin took to answer Cloudflare - the tunnel's health for a tunneled service), over requests an origin answered, and **edge time to first byte** (what visitors see), cache hits included. Each is a p50, p95, and p99 gauge per host. Quantiles cannot be split once computed, which is why they are separate queries with their own filters, and why they are gauges rather than counters.
 
+### Unique Visitor IPs (`httpRequests1hGroups`, `httpRequests1dGroups`)
+
+Distinct client IPs for the last complete hour and UTC day per zone, from Cloudflare's hourly and daily rollups, as `cflog_http_unique_ips{window="1h"|"1d"}`. This counts IPs, not people: bots, scanners, and monitors are included, and NAT or mobile carriers merge or split real visitors. Treat it as an upper bound to compare with RUM visits. The partial current hour or day is never reported.
+
+### DNS (`dnsAnalyticsAdaptiveGroups`)
+
+Authoritative DNS queries per zone, grouped per minute by name, type, response code, cache state, and answering colo. Groups ship to Loki under `{job="cloudflare", type="dns", zone="example.com"}`; counts go to `cflog_dns_queries_total` by type and response code, so query names stay out of Prometheus. Processing time p50/p95/p99 is a gauge over the latency window. On by default; set `cloudflare.dns.enabled: false` to turn it off.
+
 ### RUM / Web Analytics (`rumPageloadEventsAdaptiveGroups`, `rumWebVitalsEventsAdaptiveGroups`)
 
 Browser-side Real User Monitoring, scoped per Web Analytics site. Page loads are pushed to Loki under `{job="cloudflare", type="rum_pageload", site="example.com"}` and counted (page views and sessions by country, device, and host) in Prometheus. Core Web Vitals (LCP, INP, FID, FCP, TTFB, CLS) p75 are exposed as Prometheus gauges, sliced by host and device.
@@ -100,6 +108,9 @@ Exposed on the configured metrics listen address (default `:9101`).
 | `cflog_http_bytes_total` | counter | `type`, `host`, `source`, `zone` | Cumulative edge response bytes |
 | `cflog_http_origin_latency_seconds` | gauge | `quantile`, `host`, `zone` | Origin response time p50/p95/p99 over the trailing latency window (client requests an origin answered) |
 | `cflog_http_edge_ttfb_seconds` | gauge | `quantile`, `host`, `zone` | Edge time to first byte p50/p95/p99 over the trailing latency window (client requests, cache hits included) |
+| `cflog_http_unique_ips` | gauge | `window`, `zone` | Distinct client IPs in the last complete hour (`1h`) or UTC day (`1d`); IPs, not people |
+| `cflog_dns_queries_total` | counter | `query_type`, `response_code`, `zone` | Authoritative DNS queries |
+| `cflog_dns_processing_seconds` | gauge | `quantile`, `zone` | DNS processing time p50/p95/p99 over the trailing latency window |
 | `cflog_rum_pageviews_total` | counter | `country`, `device`, `host`, `site` | RUM page views (known bots excluded) |
 | `cflog_rum_sessions_total` | counter | `country`, `device`, `host`, `site` | RUM sessions (entry page loads, known bots excluded) |
 | `cflog_rum_web_vital_seconds` | gauge | `vital`, `device`, `host`, `site` | Core Web Vitals p75 in seconds (lcp, inp, fid, fcp, ttfb), real browsers only |
@@ -108,7 +119,7 @@ Exposed on the configured metrics listen address (default `:9101`).
 | `cflog_loki_push_duration_seconds` | histogram | | Loki push latency |
 | `cflog_build_info` | gauge | `version`, `go_version` | Build metadata |
 
-**Cardinality.** The HTTP series grow with the number of distinct label combinations a zone actually sees, not the product of every possible value. Measured over 24 hours on two Pro zones (3 and 13 hosts), `cflog_http_requests_total` produced 117 and 226 series, and `cflog_http_origin_requests_total` well under that. Each latency gauge is at most 3 quantiles x the hosts with client traffic in the window (about 17 here). The RUM `host` label is bounded by the websites carrying the Web Analytics beacon (7 here), so RUM series stay at hosts x countries x devices seen. High-cardinality request detail (path, query, referer, client IP, user agent) stays in Loki and never becomes a label.
+**Cardinality.** The HTTP series grow with the number of distinct label combinations a zone actually sees, not the product of every possible value. Measured over 24 hours on two Pro zones (3 and 13 hosts), `cflog_http_requests_total` produced 117 and 226 series, and `cflog_http_origin_requests_total` well under that. Each latency gauge is at most 3 quantiles x the hosts with client traffic in the window (about 17 here). DNS counts stay at the type x response code pairs a zone sees (about 25 here), since query names stay in Loki. The RUM `host` label is bounded by the websites carrying the Web Analytics beacon (7 here), so RUM series stay at hosts x countries x devices seen. High-cardinality request detail (path, query, referer, client IP, user agent) stays in Loki and never becomes a label.
 
 ## Loki Streams
 
@@ -118,6 +129,7 @@ Log streams pushed to Loki:
 |--------|--------|---------|
 | Firewall events | `{job="cloudflare", type="firewall", zone="example.com"}` | One JSON log line per firewall event |
 | HTTP traffic | `{job="cloudflare", type="http_traffic", zone="example.com"}` | One JSON log line per traffic group |
+| DNS queries | `{job="cloudflare", type="dns", zone="example.com"}` | One JSON log line per DNS query group |
 | Audit logs | `{job="cloudflare", type="audit", account="my-account"}` | One JSON log line per audit event |
 | RUM page loads | `{job="cloudflare", type="rum_pageload", site="example.com"}` | One JSON log line per page-load group |
 
@@ -146,6 +158,8 @@ cloudflare:
         name: "example.com"
     ingestion_lag: 10m                # Hold RUM page-load windows back from now (default: 10m)
     vitals_window: 1h                 # Core Web Vitals p75 reach back this far (default: 1h)
+  dns:
+    enabled: true                     # Authoritative DNS analytics per zone (default: true)
   poll_interval: 5m                   # How often to poll (default: 5m)
   backfill_window: 1h                 # On startup, fetch this far back (default: 1h)
   ingestion_lag: 3m                   # Hold firewall/HTTP/audit windows back from now (default: 3m)
@@ -174,7 +188,7 @@ logging:
 
 The API token requires the following permissions:
 
-- **Zone Analytics** - Read (for firewall and HTTP zone analytics)
+- **Zone Analytics** - Read (for firewall, HTTP, and DNS zone analytics)
 - **Account Analytics** - Read (required for RUM / Web Analytics)
 - **Account Settings** - Read (required for audit logs)
 
@@ -259,16 +273,19 @@ make clean                  # remove build artifacts
 |   |   |-- dataset.go                # Dataset query builder (selection from row types) + runner
 |   |   |-- graphql.go                # GraphQL transport
 |   |   |-- firewall.go               # firewallEventsAdaptive dataset
-|   |   |-- http.go                   # httpRequestsAdaptiveGroups dataset
+|   |   |-- http.go                   # HTTP traffic, latency, and unique-IP datasets
+|   |   |-- dns.go                    # dnsAnalyticsAdaptiveGroups datasets
+|   |   |-- quantiles.go              # Shared latency percentile shape
 |   |   |-- rum.go                    # RUM / Web Analytics datasets
 |   |   |-- audit.go                  # REST audit logs query
-|   |   |-- client_test.go, rum_test.go, transport_test.go
+|   |   `-- *_test.go
 |   |-- collector/
 |   |   |-- base.go                   # Shared config, identity, poll loop, poll window, metrics
 |   |   |-- poll.go                   # Cursor-based and trailing-window poll templates
 |   |   |-- shipping.go               # Ship to Loki, then commit the poll window
 |   |   |-- firewall.go               # Firewall event poller
-|   |   |-- http.go                   # HTTP traffic poller, counters
+|   |   |-- http.go                   # HTTP poller: counters, latency, unique IPs
+|   |   |-- dns.go                    # DNS poller: counters, processing time
 |   |   |-- audit.go                  # Audit log poller, boundary dedupe
 |   |   |-- rum.go                    # RUM poller: counters, vitals
 |   |   |-- consumer_interfaces.go    # Narrow consumer-declared interfaces

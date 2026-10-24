@@ -30,11 +30,21 @@ type firewallQuerier interface {
 }
 
 // httpQuerier is the HTTP collector's view of the Cloudflare client: traffic
-// for the counters, and the two per-host latency distributions.
+// for the counters, the two per-host latency distributions, and the hourly and
+// daily unique-IP rollups.
 type httpQuerier interface {
 	QueryHTTPRequests(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPRequestGroup, error)
 	QueryHTTPOriginLatency(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPLatencyGroup[cloudflare.OriginLatencyQuantiles], error)
 	QueryHTTPEdgeLatency(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPLatencyGroup[cloudflare.EdgeLatencyQuantiles], error)
+	QueryHTTPUniqueIPsHourly(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPUniqueIPsGroup, error)
+	QueryHTTPUniqueIPsDaily(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPUniqueIPsGroup, error)
+}
+
+// dnsQuerier is the DNS collector's view of the Cloudflare client: query
+// groups for the counters, and the zone's processing time distribution.
+type dnsQuerier interface {
+	QueryDNSQueries(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.DNSQueryGroup, error)
+	QueryDNSProcessingTime(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.DNSProcessingGroup, error)
 }
 
 // auditQuerier is the audit collector's view of the Cloudflare client.
@@ -50,12 +60,13 @@ type rumQuerier interface {
 	QueryRUMWebVitals(ctx context.Context, accountID, siteTag string, since, until time.Time) ([]cloudflare.RUMWebVitalsGroup, error)
 }
 
-// cloudflareQuerier composes the two zone-scoped queriers for the shared
-// ZoneCollectorConfig that the firewall and HTTP collectors both build from.
-// Each collector narrows it to the query methods it actually calls.
+// cloudflareQuerier composes the zone-scoped queriers for the shared
+// ZoneCollectorConfig that the firewall, HTTP, and DNS collectors all build
+// from. Each collector narrows it to the query methods it actually calls.
 type cloudflareQuerier interface {
 	firewallQuerier
 	httpQuerier
+	dnsQuerier
 }
 
 // -------------------------------------------------------------------------

@@ -8,8 +8,9 @@
 // per host, with cache, origin, and request-source breakdowns - and ships raw
 // traffic groups to Loki as structured JSON logs; the traffic cursor moves to
 // the end of each handled window (see cursor.go) through the shared
-// cursor-based poll. Per-host origin and edge latency quantiles are reported
-// as gauges through the shared trailing poll. Both templates live in poll.go.
+// cursor-based poll. Per-host origin and edge latency quantiles, and the
+// distinct client IPs of the last complete hour and day, are reported as
+// gauges through the shared trailing poll. Both templates live in poll.go.
 // -------------------------------------------------------------------------------
 
 package collector
@@ -31,9 +32,9 @@ import (
 
 // HTTPCollector polls Cloudflare for HTTP traffic stats, updates Prometheus
 // counters, and ships raw traffic data to Loki, and reports per-host origin
-// and edge latency quantiles as gauges. The base's scope is the zone name.
-// lastSeen is the traffic cursor; the latency polls use the trailing window
-// and need no cursor.
+// and edge latency quantiles and the zone's unique client IPs as gauges. The
+// base's scope is the zone name. lastSeen is the traffic cursor; the gauge
+// polls re-query fixed windows and need no cursor.
 type HTTPCollector struct {
 	base
 	cf       httpQuerier
@@ -67,12 +68,14 @@ func (c *HTTPCollector) Run(ctx context.Context) error {
 	return c.run(ctx, c.lastSeen, c.poll)
 }
 
-// poll runs the traffic poll and both latency polls. They are independent: a
-// failure in one does not block or affect the others.
+// poll runs the traffic poll, both latency polls, and both unique-IP polls.
+// They are independent: a failure in one does not block or affect the others.
 func (c *HTTPCollector) poll(ctx context.Context) {
 	c.pollTraffic(ctx)
 	pollLatency(ctx, c, DatasetHTTPOriginLatency, "HTTP origin latency", metrics.HTTPOriginLatencySeconds, c.cf.QueryHTTPOriginLatency)
 	pollLatency(ctx, c, DatasetHTTPEdgeLatency, "HTTP edge latency", metrics.HTTPEdgeTTFBSeconds, c.cf.QueryHTTPEdgeLatency)
+	pollUniqueIPs(ctx, c, DatasetHTTPUniqueIPsHourly, "1h", time.Hour, c.cf.QueryHTTPUniqueIPsHourly)
+	pollUniqueIPs(ctx, c, DatasetHTTPUniqueIPsDaily, "1d", 24*time.Hour, c.cf.QueryHTTPUniqueIPsDaily)
 }
 
 // -------------------------------------------------------------------------
@@ -140,11 +143,40 @@ func pollLatency[Q cloudflare.LatencyQuantiles](ctx context.Context, c *HTTPColl
 		set: func(groups []cloudflare.HTTPLatencyGroup[Q]) {
 			for i := range groups {
 				host := normalizeHost(groups[i].Dimensions.ClientRequestHTTPHost)
-				p := groups[i].Quantiles.Percentiles()
-				c.setDuration(gauge, p.P50, time.Millisecond, "0.5", host)
-				c.setDuration(gauge, p.P95, time.Millisecond, "0.95", host)
-				c.setDuration(gauge, p.P99, time.Millisecond, "0.99", host)
+				c.setPercentiles(gauge, groups[i].Quantiles.Percentiles(), time.Millisecond, host)
 			}
+		},
+	})
+}
+
+// -------------------------------------------------------------------------
+// UNIQUE IPS (gauges, last complete hour and day)
+// -------------------------------------------------------------------------
+
+// uniqueIPsQuery is a zone unique-IP rollup query on the Cloudflare client.
+type uniqueIPsQuery func(ctx context.Context, zoneID string, since, until time.Time) ([]cloudflare.HTTPUniqueIPsGroup, error)
+
+// pollUniqueIPs runs one trailing poll of a unique-IP rollup over the last
+// complete period, setting cflog_http_unique_ips for window. A window with no
+// rows had no clients, so it reports 0 rather than nothing. The hourly and
+// daily rollups differ only in their dataset, period, and query, so both run
+// through here.
+func pollUniqueIPs(ctx context.Context, c *HTTPCollector, dataset Dataset, window string, period time.Duration, query uniqueIPsQuery) {
+	pollTrailing(ctx, &c.base, trailingPoll[cloudflare.HTTPUniqueIPsGroup]{
+		dataset:   dataset,
+		span:      dataset.String() + ".poll",
+		title:     "HTTP unique IPs (" + window + ")",
+		countAttr: telemetry.AttrGroupCount,
+		query: func(ctx context.Context, since, until time.Time) ([]cloudflare.HTTPUniqueIPsGroup, error) {
+			return query(ctx, c.zoneID, since, until)
+		},
+		window: lastComplete(period),
+		set: func(groups []cloudflare.HTTPUniqueIPsGroup) {
+			var uniques int64
+			if len(groups) > 0 {
+				uniques = groups[0].Uniq.Uniques
+			}
+			c.set(metrics.HTTPUniqueIPs, float64(uniques), window)
 		},
 	})
 }
