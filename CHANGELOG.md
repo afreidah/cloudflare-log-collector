@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 
 
+## [0.1.27](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.26...v0.1.27) (2026-11-15)
+
+
+### Miscellaneous Chores
+
+* release 0.1.27 ([#129](https://github.com/afreidah/cloudflare-log-collector/issues/129)) ([be9f42d](https://github.com/afreidah/cloudflare-log-collector/commit/be9f42d913ddd593a126cb8f668a1252880e442d))
+
 ## [0.1.26](https://github.com/afreidah/cloudflare-log-collector/compare/v0.1.25...v0.1.26) (2026-10-24)
 
 
